@@ -1,7 +1,10 @@
-.PHONY: app install clean
+.PHONY: app windows install clean
 
 app:
-	./Scripts/build.sh
+	zsh ./macOS/Scripts/build.sh
+
+windows:
+	pwsh -NoProfile -File ./Windows/Scripts/build.ps1
 
 install: app
 	mkdir -p "$(HOME)/Applications"

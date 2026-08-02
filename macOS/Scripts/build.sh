@@ -3,15 +3,16 @@
 set -euo pipefail
 
 script_dir="${0:A:h}"
-project_root="${script_dir:h}"
-source_dir="${project_root}/Sources/NotesApp"
-resource_source_dir="${project_root}/Resources"
+macos_root="${script_dir:h}"
+project_root="${macos_root:h}"
+source_dir="${macos_root}/Sources/NotesApp"
+resource_source_dir="${macos_root}/Resources"
 app_dir="${project_root}/build/Notes.app"
 module_cache="${project_root}/build/ModuleCache"
 contents_dir="${app_dir}/Contents"
 macos_dir="${contents_dir}/MacOS"
 resources_dir="${contents_dir}/Resources"
-icon_source="${resource_source_dir}/NotesIcon.png"
+icon_source="${project_root}/Shared/Resources/NotesIcon.png"
 
 rm -rf "${app_dir}"
 mkdir -p "${macos_dir}" "${resources_dir}" "${module_cache}"
