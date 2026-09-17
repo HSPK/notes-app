@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128" fill="none">
+  <title>Notes - Layered N</title>
+  <desc>An abstract charcoal N, edged in white, with two quiet offset layers. No enclosing tile.</desc>
+  <defs>
+    <path id="mark" d="M24 98V24L98 98V24"/>
+  </defs>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <use href="#mark" transform="translate(6 7)" stroke="#777777" stroke-width="20"/>
+    <use href="#mark" transform="translate(3 3.5)" stroke="#D4D4D4" stroke-width="20"/>
+    <use href="#mark" stroke="#FFFFFF" stroke-width="20"/>
+    <use href="#mark" stroke="#292929" stroke-width="13"/>
+  </g>
+</svg>

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="referrer" content="no-referrer">
+    <meta name="notes-style-nonce" content="__STYLE_NONCE__">
+    <title>Notes</title>
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 256x256">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" sizes="any">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/editor.bundle.css">
+    <script type="module" src="/app.mjs"></script>
+  </head>
+  <body data-sidebar="open">
+    <a class="skip-link" href="#editor">Skip to document</a>
+    <div class="app-shell">
+      <aside id="sidebar" class="sidebar" aria-label="Library">
+        <header class="library-heading">
+          <span class="app-name">Notes</span>
+          <button id="new-note" class="icon-button" type="button" title="New note" aria-label="New note" disabled>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+          </button>
+        </header>
+        <div class="sidebar-tabs" role="tablist" aria-label="Sidebar">
+          <button id="files-tab" role="tab" aria-controls="files-panel" aria-selected="true" type="button">Files</button>
+          <button id="outline-tab" role="tab" aria-controls="outline-panel" aria-selected="false" tabindex="-1" type="button">Outline</button>
+        </div>
+        <section id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
+          <div class="search-field">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.2"/><path d="m12.5 12.5 4 4"/></svg>
+            <label class="visually-hidden" for="file-filter">Search files</label>
+            <input id="file-filter" type="search" placeholder="Search files" autocomplete="off" spellcheck="false" aria-controls="file-list">
+          </div>
+          <p id="tree-message" class="tree-message" role="status">Connecting to your notes…</p>
+          <p id="tree-limit" class="notice tree-limit" role="status" hidden></p>
+          <div id="files-scroll-frame" class="scroll-frame" data-overlayscrollbars-initialize>
+            <nav id="file-nav" class="file-nav" aria-label="Markdown notes">
+              <ul id="file-list" class="file-list"></ul>
+            </nav>
+          </div>
+        </section>
+        <section id="outline-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="outline-tab" hidden>
+          <p id="outline-empty" class="tree-message">Headings in this document will appear here.</p>
+          <div id="outline-scroll-frame" class="scroll-frame" data-overlayscrollbars-initialize>
+            <nav id="outline-scroll" aria-label="Document outline"><ul id="outline-list" class="outline-list"></ul></nav>
+          </div>
+        </section>
+        <footer class="sidebar-footer">
+          <details id="library-menu" class="popup library-menu">
+            <summary title="Notes folder"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.5h6l1.5 2h7.5v9h-15zM2.5 5.5v-2h6l1.5 2h7.5v2"/></svg><span id="library-name">Notes folder</span></summary>
+            <div class="popup-panel folder-panel">
+              <strong>Notes folder</strong>
+              <span id="root-path">Choose a folder in Settings or with the CLI.</span>
+              <p>Change the folder in the desktop app's Settings, or restart the CLI with --serve.</p>
+              <button id="refresh-files" type="button" disabled>Refresh files</button>
+            </div>
+          </details>
+          <span id="file-count" class="file-count"></span>
+        </footer>
+      </aside>
+
+      <main class="document-area" aria-labelledby="document-title">
+        <header class="document-header">
+          <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle sidebar (Ctrl+Shift+L)" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="true">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1"/><path d="M7.5 3.5v13"/></svg>
+          </button>
+          <h1 id="document-title">Untitled</h1>
+          <div class="document-actions">
+            <details id="view-menu" class="popup">
+              <summary id="view-label" title="Document view">Live</summary>
+              <div class="popup-panel view-switcher" role="group" aria-label="Document view">
+                <button id="view-rich" type="button" data-view="rich" aria-pressed="true">Live editing</button>
+                <button id="view-editor" type="button" data-view="editor" aria-pressed="false">Markdown source</button>
+                <button id="view-split" type="button" data-view="split" aria-pressed="false">Source and preview</button>
+                <button id="view-preview" type="button" data-view="preview" aria-pressed="false">Read only</button>
+              </div>
+            </details>
+            <button id="format-toggle" class="icon-button format-toggle" type="button" title="Formatting" aria-label="Formatting" aria-controls="format-panel" aria-expanded="false">Aa</button>
+            <button id="save-document" class="save-button" type="button" title="Save (Ctrl+S)" aria-keyshortcuts="Control+S" disabled><span id="save-label">Save</span></button>
+            <details id="more-menu" class="popup">
+              <summary class="icon-button" title="More actions" aria-label="More actions"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="16" cy="10" r="1"/></svg></summary>
+              <div class="popup-panel">
+                <button id="reload-document" type="button" disabled>Reload from disk</button>
+                <button id="copy-text" type="button" disabled>Copy Markdown</button>
+                <button id="focus-mode" type="button" aria-pressed="false">Distraction-free <kbd>Ctrl+Shift+F</kbd></button>
+                <a href="/THIRD-PARTY-LICENSES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a>
+              </div>
+            </details>
+          </div>
+        </header>
+        <div class="document-alerts">
+          <div id="connection-message" class="notice" role="alert" hidden></div>
+          <div id="appearance-message" class="notice is-warning" role="status" hidden></div>
+          <div id="conflict-message" class="notice is-warning" role="alert" hidden></div>
+          <div id="root-warning" class="notice is-warning" role="alert" hidden></div>
+          <div id="loading-message" class="notice" role="status" hidden></div>
+          <div id="size-warning" class="notice is-error" role="alert" hidden></div>
+          <div id="rich-warning" class="notice is-warning" role="status" hidden></div>
+        </div>
+        <div id="format-panel" class="format-panel" hidden>
+          <div id="format-toolbar" class="format-toolbar" role="group" aria-label="Text formatting"></div>
+        </div>
+        <section id="empty-document" class="empty-document">
+          <svg viewBox="0 0 48 56" aria-hidden="true"><path d="M9 3h20l10 10v40H9zM29 3v11h10M17 25h14M17 33h14M17 41h9"/></svg>
+          <h2>A place to write.</h2>
+          <p>Open a note from the sidebar, or start a new one.</p>
+          <button id="empty-new-note" type="button" disabled>New note</button>
+          <p class="writing-hint">Edit directly in the formatted page.<br>Use Source when you need the original Markdown.</p>
+        </section>
+        <div id="document-panes" class="document-panes" data-view="rich" hidden>
+          <section class="rich-pane" aria-label="Live formatted editing">
+            <div id="rich-editor" class="rich-editor" data-overlayscrollbars-initialize></div>
+          </section>
+          <section class="editor-pane" aria-label="Markdown source" data-overlayscrollbars-initialize>
+            <label for="editor" class="visually-hidden">Markdown source</label>
+            <textarea id="editor" class="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="size-warning" disabled></textarea>
+          </section>
+          <section class="preview-pane" aria-label="Markdown preview" data-overlayscrollbars-initialize>
+            <span id="preview-status" class="visually-hidden" role="status"></span>
+            <article id="preview" class="markdown-body preview-body" tabindex="0" aria-label="Markdown preview"></article>
+          </section>
+        </div>
+        <footer class="status-bar">
+          <span id="dirty-indicator" class="dirty-indicator" data-state="empty" role="status">No note open</span>
+          <span id="document-message" class="status-message" role="status" hidden></span>
+          <span id="copy-status" class="visually-hidden" role="status"></span>
+          <div class="status-right">
+            <span id="editor-stats"></span>
+            <span id="connection-label" class="connection-label" role="status">Connecting…</span>
+            <button id="reconnect" type="button" disabled>Reconnect</button>
+          </div>
+        </footer>
+      </main>
+    </div>
+    <button id="sidebar-scrim" type="button" aria-label="Close sidebar" tabindex="-1" hidden></button>
+
+    <dialog id="new-note-dialog" aria-labelledby="new-note-title">
+      <form id="new-note-form">
+        <h2 id="new-note-title">New note</h2>
+        <label for="new-note-path">File name</label>
+        <input id="new-note-path" name="path" type="text" placeholder="Untitled.md" autocomplete="off" spellcheck="false" aria-describedby="new-note-hint new-note-error" required>
+        <p id="new-note-hint" class="form-hint">Use .md or .markdown. You can include an existing subfolder.</p>
+        <p id="new-note-error" class="notice is-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-new-note" type="button">Cancel</button>
+          <button id="create-note" class="button-primary" type="submit">Create note</button>
+        </div>
+      </form>
+    </dialog>
+    <noscript><p class="notice is-error">Enable JavaScript, then reopen Notes using the desktop app or CLI launch URL.</p></noscript>
+  </body>
+</html>

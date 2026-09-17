@@ -1,0 +1,35 @@
+{
+  "name": "notes-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node frontend/build.mjs",
+    "icons": "node scripts/build-icon.mjs",
+    "test": "node --test tests/web.test.mjs tests/editor.test.mjs",
+    "test:browser": "node --test tests/editor-browser.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "@lezer/cpp": "1.1.6",
+    "@lezer/highlight": "1.2.3",
+    "@lezer/javascript": "1.5.4",
+    "@lezer/markdown": "1.7.2",
+    "@lezer/rust": "1.0.2",
+    "@milkdown/core": "7.22.1",
+    "@milkdown/plugin-history": "7.22.1",
+    "@milkdown/preset-commonmark": "7.22.1",
+    "@milkdown/preset-gfm": "7.22.1",
+    "@milkdown/prose": "7.22.1",
+    "@milkdown/utils": "7.22.1",
+    "entities": "8.1.0",
+    "overlayscrollbars": "2.16.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5",
+    "yaml": "2.9.0"
+  }
+}

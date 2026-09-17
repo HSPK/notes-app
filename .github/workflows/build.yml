@@ -1,0 +1,69 @@
+name: Build shared core and wrappers
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: build/rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Select Rust stable
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - name: Restore and build shared web assets
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          npm test
+      - name: Test shared core and platform adapters
+        run: cargo test --locked --workspace
+      - name: Build headless core
+        run: cargo build --locked -p notes-cli
+      - name: Install test browser
+        if: runner.os != 'Windows'
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Test browser editor against core CLI
+        working-directory: web
+        run: npx playwright test
+      - name: Build Windows wrapper
+        if: runner.os == 'Windows'
+        run: .\Windows\Scripts\build.ps1 -Runtime win-x64 -Toolchain msvc
+      - name: Build macOS wrapper and archive application
+        if: runner.os == 'macOS'
+        run: |
+          zsh macOS/Scripts/build.sh
+          tar -czf build/Notes-macOS.tar.gz -C build Notes.app
+      - name: Build Linux CLI archive
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --release -p notes-cli
+          tar -czf build/notes-core-linux.tar.gz -C build/rust/release notes-core
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            build/windows/win-x64/Notes.exe
+            build/Notes-macOS.tar.gz
+            build/notes-core-linux.tar.gz

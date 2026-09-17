@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/notes-core", "crates/notes-cli", "crates/notes-core-ffi", "Windows"]
+default-members = ["crates/notes-core", "crates/notes-cli"]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
