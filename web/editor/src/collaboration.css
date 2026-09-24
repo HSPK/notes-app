@@ -1,0 +1,33 @@
+.peer-color-0 { --peer-color: #a94747; }
+.peer-color-1 { --peer-color: #32759c; }
+.peer-color-2 { --peer-color: #477a4c; }
+.peer-color-3 { --peer-color: #8860a5; }
+.peer-color-4 { --peer-color: #a5752c; }
+.peer-color-5 { --peer-color: #287f82; }
+.peer-color-6 { --peer-color: #b35484; }
+.peer-color-7 { --peer-color: #626bb6; }
+.peer-color-8 { --peer-color: #997044; }
+.peer-color-9 { --peer-color: #51822d; }
+.peer-color-10 { --peer-color: #aa5d35; }
+.peer-color-11 { --peer-color: #637589; }
+.collaboration-people { display: flex; align-items: center; gap: 4px; flex: none; }
+.collaboration-avatar {
+  display: grid; place-items: center; width: 25px; height: 25px; flex: none;
+  border: 2px solid var(--peer-color, var(--border)); border-radius: 50%;
+  background: var(--surface, #fff); color: var(--text, #333);
+  font-size: 9px; font-weight: 650; user-select: none;
+}
+.collaboration-join { padding: 4px 7px; color: var(--muted); font-size: 11px; }
+.collaboration-join:disabled { opacity: 1; cursor: default; }
+#collaboration-cursors { position: fixed; inset: 0; z-index: 15; pointer-events: none; overflow: hidden; }
+.collaboration-caret { position: absolute; width: 0; border-left: 2px solid var(--peer-color); }
+.collaboration-caret-name {
+  position: absolute; left: -2px; bottom: 100%; padding: 1px 4px;
+  border-radius: 3px 3px 3px 0; color: #fff; background: var(--peer-color);
+  font: 10px/1.4 system-ui, sans-serif; white-space: nowrap;
+}
+@media (max-width: 650px) {
+  .collaboration-avatar { width: 21px; height: 21px; font-size: 8px; }
+  .collaboration-people { gap: 2px; }
+  .collaboration-join { font-size: 10px; padding-inline: 3px; }
+}

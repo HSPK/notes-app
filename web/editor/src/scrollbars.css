@@ -1,0 +1,110 @@
+@import "overlayscrollbars/overlayscrollbars.css" layer(scrollbar-base);
+
+.os-theme-notes {
+  --os-size: 12px;
+  --os-padding-perpendicular: 3px;
+  --os-padding-axis: 3px;
+  --os-track-bg: transparent;
+  --os-track-bg-hover: transparent;
+  --os-track-bg-active: transparent;
+  --os-track-border: none;
+  --os-track-border-hover: none;
+  --os-track-border-active: none;
+  --os-handle-border-radius: 8px;
+  --os-handle-bg: rgb(65 65 65 / 24%);
+  --os-handle-bg-hover: rgb(65 65 65 / 43%);
+  --os-handle-bg-active: rgb(65 65 65 / 58%);
+  --os-handle-perpendicular-size: 4px;
+  --os-handle-perpendicular-size-hover: 6px;
+  --os-handle-perpendicular-size-active: 6px;
+  --os-handle-min-size: 28px;
+  --os-handle-interactive-area-offset: 4px;
+}
+
+.os-theme-notes.os-scrollbar { z-index: 5; }
+
+/* Hide native gutters before initialization as well as while the controls update. */
+:is(.file-nav, #outline-scroll, .notes-live-scroll, textarea.editor, .preview-body,
+  .notes-metadata-source, .notes-code-block pre) {
+  scrollbar-width: none;
+  scrollbar-gutter: auto;
+}
+
+:is(.file-nav, #outline-scroll, .notes-live-scroll, textarea.editor, .preview-body,
+  .notes-metadata-source, .notes-code-block pre)::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.scroll-frame { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.scroll-frame > [data-overlayscrollbars-viewport] { flex: 1; min-height: 0; min-width: 0; }
+#outline-scroll { overflow: auto; }
+.notes-metadata-scroll { position: relative; min-width: 0; margin-top: .4em; }
+.notes-metadata-scroll .notes-metadata-source { margin-top: 0; }
+.notes-code-scroll { position: relative; min-width: 0; overflow: hidden; }
+.notes-code-scroll > .os-scrollbar-horizontal {
+  --os-size: 8px;
+  --os-padding-perpendicular: 2px;
+  --os-handle-perpendicular-size-hover: 4px;
+  --os-handle-perpendicular-size-active: 4px;
+  --os-handle-interactive-area-offset: 0;
+}
+
+/* These existing viewports own their document insets; do not replace them with
+   the library's inline zero-padding compensation for an unpadded host. */
+.editor-pane, .preview-pane {
+  --scroll-pad-start: var(--document-top);
+  --scroll-pad-inline: max(var(--document-gutter), calc((100% - var(--document-width)) / 2));
+  --scroll-pad-end: 140px;
+}
+
+:is(textarea.editor, .preview-body)[data-overlayscrollbars-viewport] {
+  padding: var(--scroll-pad-start) var(--scroll-pad-inline) var(--scroll-pad-end) !important;
+}
+
+.document-panes[data-view="split"] .editor-pane {
+  --scroll-pad-start: 35px;
+  --scroll-pad-inline: 25px;
+  --scroll-pad-end: 100px;
+}
+
+@media (max-width: 900px) {
+  .document-panes[data-view="split"] :is(.editor-pane, .preview-pane) {
+    --scroll-pad-start: 24px;
+    --scroll-pad-inline: 24px;
+    --scroll-pad-end: 24px;
+  }
+}
+
+@media (max-width: 650px) {
+  .document-panes :is(.editor-pane, .preview-pane) { --scroll-pad-inline: 22px; }
+}
+
+:root[data-theme="dark"] .os-theme-notes {
+  --os-handle-bg: rgb(210 210 210 / 24%);
+  --os-handle-bg-hover: rgb(210 210 210 / 43%);
+  --os-handle-bg-active: rgb(210 210 210 / 58%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) .os-theme-notes {
+    --os-handle-bg: rgb(210 210 210 / 24%);
+    --os-handle-bg-hover: rgb(210 210 210 / 43%);
+    --os-handle-bg-active: rgb(210 210 210 / 58%);
+  }
+}
+
+@media (forced-colors: active) {
+  .os-theme-notes {
+    --os-handle-bg: CanvasText !important;
+    --os-handle-bg-hover: Highlight !important;
+    --os-handle-bg-active: Highlight !important;
+    forced-color-adjust: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .os-theme-notes,
+  .os-theme-notes .os-scrollbar-handle { transition: none !important; }
+}

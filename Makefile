@@ -1,10 +1,10 @@
 .PHONY: app windows core web test install clean
 
 app:
-	zsh ./macOS/Scripts/build.sh
+	zsh ./apps/macos/Scripts/build.sh
 
 windows:
-	pwsh -NoProfile -File ./Windows/Scripts/build.ps1
+	pwsh -NoProfile -File ./apps/windows/Scripts/build.ps1
 
 core:
 	cargo build --locked --release -p notes-cli --target-dir build/rust
@@ -15,6 +15,7 @@ web:
 
 test:
 	cargo test --locked --workspace --target-dir build/rust
+	npm --prefix web run check:lines
 	npm --prefix web test
 
 install: app

@@ -7,7 +7,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 use std::ptr::NonNull;
 
-use super::{ApiError, check_name};
+use super::{ApiError, EntryFingerprint, check_name};
 
 pub(in super::super) struct Directory {
     file: File,
@@ -15,6 +15,7 @@ pub(in super::super) struct Directory {
 
 pub(in super::super) struct EntryMetadata {
     mode: libc::mode_t,
+    fingerprint: EntryFingerprint,
 }
 
 impl EntryMetadata {
@@ -32,6 +33,10 @@ impl EntryMetadata {
 
     pub(in super::super) fn is_hidden(&self) -> bool {
         false
+    }
+
+    pub(in super::super) fn fingerprint(&self) -> EntryFingerprint {
+        self.fingerprint
     }
 }
 
@@ -99,7 +104,26 @@ impl Directory {
         }
         // SAFETY: successful fstatat initialized the entire stat structure.
         let stat = unsafe { stat.assume_init() };
-        Ok(EntryMetadata { mode: stat.st_mode })
+        #[cfg(target_os = "linux")]
+        let fingerprint = EntryFingerprint([
+            stat.st_size as u64,
+            stat.st_mtime as u64,
+            stat.st_mtime_nsec as u64,
+            stat.st_ctime as u64,
+            stat.st_ctime_nsec as u64,
+        ]);
+        #[cfg(target_os = "macos")]
+        let fingerprint = EntryFingerprint([
+            stat.st_size as u64,
+            stat.st_mtimespec.tv_sec as u64,
+            stat.st_mtimespec.tv_nsec as u64,
+            stat.st_ctimespec.tv_sec as u64,
+            stat.st_ctimespec.tv_nsec as u64,
+        ]);
+        Ok(EntryMetadata {
+            mode: stat.st_mode,
+            fingerprint,
+        })
     }
 
     fn checked_metadata(&self, name: &OsStr) -> Result<EntryMetadata, ApiError> {
@@ -140,6 +164,52 @@ impl Directory {
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
             0o666,
         )
+    }
+
+    pub(in super::super) fn create_dir(&self, name: &OsStr) -> io::Result<()> {
+        let name = child_name(name)?;
+        // SAFETY: name is a validated, NUL-terminated child and the directory descriptor is live.
+        if unsafe { libc::mkdirat(self.file.as_raw_fd(), name.as_ptr(), 0o777) } == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(in super::super) fn move_entry_to(
+        &self,
+        source: &OsStr,
+        destination_parent: &Self,
+        destination: &OsStr,
+    ) -> io::Result<()> {
+        let source = child_name(source)?;
+        let destination = child_name(destination)?;
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                self.file.as_raw_fd(),
+                source.as_ptr(),
+                destination_parent.file.as_raw_fd(),
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result = unsafe {
+            libc::renameatx_np(
+                self.file.as_raw_fd(),
+                source.as_ptr(),
+                destination_parent.file.as_raw_fd(),
+                destination.as_ptr(),
+                libc::RENAME_EXCL,
+            ) as libc::c_long
+        };
+        if result == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     // Returns whether the staging name still needs removal after publication.

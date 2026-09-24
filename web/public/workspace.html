@@ -1,0 +1,111 @@
+<template id="workspace-actions">
+  <div class="menu-group" role="group" aria-label="Workspace">
+    <button id="workspace-search-open" type="button">Search notes <kbd>Ctrl/Cmd+P</kbd></button>
+    <button id="workspace-open" type="button" hidden>Favorites and recent notes</button>
+    <button id="shares-open" type="button" hidden>Public links</button>
+  </div>
+  <div class="menu-group" role="group" aria-label="Organize note">
+    <button id="workspace-favorite" type="button" hidden>Add to favorites</button>
+    <button id="backlinks-open" type="button" disabled>Backlinks</button>
+    <button id="attachments-open" type="button" hidden>Attachments</button>
+    <button id="document-tags-open" type="button" disabled>Edit tags</button>
+  </div>
+  <div class="menu-group" role="group" aria-label="Recovery">
+    <button id="drafts-open" type="button">Local recovery</button>
+    <button id="history-open" type="button" hidden>History</button>
+    <button id="trash-open" type="button" hidden>Recycle bin</button>
+    <button id="document-trash" type="button" hidden>Move note to recycle bin</button>
+  </div>
+</template>
+<template id="note-template-fields"><label for="new-note-template">Template</label><select id="new-note-template"><option value="blank">Blank note</option><option value="daily">Daily journal</option><option value="weekly">Weekly review</option><option value="meeting">Meeting notes</option></select></template>
+<template id="image-processing-fields">
+  <div class="setting-card"><label for="settings-image-compression">Image compression</label><select id="settings-image-compression"><option value="original">Keep original</option><option value="webp">Lossless WebP when smaller</option><option value="jpeg">JPEG on white background</option></select></div>
+  <div class="setting-card"><label for="settings-image-max-edge">Maximum image edge</label><select id="settings-image-max-edge"><option value="0">Original dimensions</option><option value="1024">1024 px</option><option value="2048">2048 px</option><option value="4096">4096 px</option></select></div>
+  <div class="setting-card"><label for="settings-image-quality">JPEG quality</label><input id="settings-image-quality" type="range" min="50" max="100" step="5"></div>
+</template>
+<p id="metadata-message" class="notice" role="status" data-status-source hidden></p>
+<template id="rename-link-options"><label class="form-hint"><input id="rename-update-links" type="checkbox" checked>Update Markdown and wiki references</label></template>
+<dialog id="backlinks-dialog" class="workspace-dialog" aria-labelledby="backlinks-title">
+  <header class="workspace-heading"><h2 id="backlinks-title">Links to this note</h2><button id="backlinks-close" type="button">Close</button></header>
+  <div id="backlinks-list" class="workspace-list"></div><p id="backlinks-message" class="notice" role="status" hidden></p>
+</dialog>
+<dialog id="attachments-dialog" class="workspace-dialog" aria-labelledby="attachments-title">
+  <header class="workspace-heading"><h2 id="attachments-title">Attachments</h2><button id="attachments-close" type="button">Close</button></header>
+  <p class="form-hint">Reference checks cover saved Markdown, not other applications or offline drafts. Close collaborative sessions before recycling files. Recycled files remain recoverable for 30 days.</p>
+  <label class="form-hint"><input id="attachments-unused" type="checkbox" checked>Show only files without Markdown references</label>
+  <div id="attachments-list" class="workspace-list"></div><p id="attachments-message" class="notice" role="status" hidden></p>
+  <div class="dialog-actions"><button id="attachments-refresh" type="button">Refresh</button><button id="attachments-recycle" type="button">Recycle selected files</button></div>
+</dialog>
+<template id="share-options-fields">
+  <label for="sharing-expires">Expires (optional)</label><input id="sharing-expires" type="datetime-local">
+  <label for="sharing-password">Share password (leave blank to keep)</label><input id="sharing-password" type="password" autocomplete="new-password" maxlength="1024">
+  <label id="sharing-clear-password-field" hidden><input id="sharing-clear-password" type="checkbox">Remove password protection</label>
+</template>
+<dialog id="public-password-dialog" aria-labelledby="public-password-title">
+  <form id="public-password-form">
+    <h2 id="public-password-title">Protected document</h2><label for="public-password">Share password</label>
+    <input id="public-password" type="password" autocomplete="off" required maxlength="1024">
+    <p id="public-password-error" class="notice is-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="public-password-cancel" type="button">Cancel</button><button id="public-password-submit" class="button-primary" type="submit">Open document</button></div>
+  </form>
+</dialog>
+<dialog id="shares-dialog" class="workspace-dialog" aria-labelledby="shares-title">
+  <header class="workspace-heading"><h2 id="shares-title">Your public links</h2><button id="shares-close" type="button">Close</button></header>
+  <div id="shares-list" class="workspace-list"></div><p id="shares-message" class="notice" role="status" hidden></p>
+</dialog>
+<dialog id="workspace-dialog" class="workspace-dialog" aria-labelledby="workspace-title">
+  <header class="workspace-heading"><h2 id="workspace-title">Your workspace</h2><button id="workspace-close" type="button">Close</button></header>
+  <div class="workspace-filters"><select id="workspace-kind" aria-label="Workspace list"><option value="favorites">Favorites</option><option value="recent">Recently opened</option></select><input id="workspace-filter" type="search" placeholder="Filter notes" aria-label="Filter workspace notes"></div>
+  <div id="workspace-list" class="workspace-list"></div><p id="workspace-message" class="notice" role="status" hidden></p>
+</dialog>
+<dialog id="drafts-dialog" class="workspace-dialog" aria-labelledby="drafts-title">
+  <header class="workspace-heading"><h2 id="drafts-title">Local recovery</h2><button id="drafts-close" type="button">Close</button></header>
+  <div id="drafts-list" class="workspace-list"></div><p id="drafts-message" class="notice" role="status" hidden></p>
+</dialog>
+<dialog id="draft-recovery-dialog" class="workspace-dialog" aria-labelledby="draft-recovery-title">
+  <h2 id="draft-recovery-title">Recover local draft</h2><p id="draft-recovery-info" class="form-hint"></p>
+  <textarea id="draft-recovery-source" class="recovery-source" rows="14" readonly aria-label="Recovered draft preview"></textarea>
+  <p id="draft-recovery-error" class="notice" role="alert" hidden></p>
+  <div class="dialog-actions"><button id="draft-recovery-close" type="button">Keep stored</button><button id="draft-recovery-discard" type="button">Discard copy</button><button id="draft-recovery-copy" type="button">Copy draft</button><button id="draft-recovery-apply" class="button-primary" type="button">Apply draft</button></div>
+</dialog>
+<dialog id="search-dialog" class="workspace-dialog search-dialog" aria-labelledby="search-title">
+  <header class="workspace-heading"><h2 id="search-title">Search notes</h2><button id="search-close" type="button">Close</button></header>
+  <form id="search-form">
+    <label class="visually-hidden" for="search-query">Search title, body and metadata</label>
+    <input id="search-query" type="search" autocomplete="off" placeholder="Search title, body and metadata">
+    <div class="workspace-filters">
+      <div class="workspace-filter"><label for="search-project">Project</label><select id="search-project"></select></div>
+      <div class="workspace-filter"><label for="search-field">Search in</label><select id="search-field"><option value="all">Everything</option><option value="title">Title</option><option value="body">Body</option><option value="metadata">Metadata</option></select></div>
+    </div>
+    <div id="search-selected-tags" class="workspace-tags" aria-label="Selected tags"></div>
+  </form>
+  <div class="search-layout">
+    <aside><h3>Tags</h3><div id="search-tags" class="workspace-tags"></div></aside>
+    <section><ul id="search-results" class="workspace-results"></ul><p id="search-empty" class="form-hint" hidden>No matching notes.</p></section>
+  </div>
+  <p id="search-message" class="notice" role="status" data-status-source hidden></p>
+</dialog>
+<dialog id="tags-dialog" aria-labelledby="tags-title">
+  <form id="tags-form">
+    <h2 id="tags-title">Document tags</h2>
+    <label for="tags-input">One tag per line</label><textarea id="tags-input" rows="6" autocomplete="off" placeholder="notes&#10;research"></textarea>
+    <p class="form-hint">Stored in YAML metadata. Other properties and the document body stay unchanged.</p>
+    <p id="tags-error" class="notice is-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="tags-cancel" type="button">Cancel</button><button class="button-primary" type="submit">Save tags</button></div>
+  </form>
+</dialog>
+<dialog id="history-dialog" class="workspace-dialog" aria-labelledby="history-title">
+  <header class="workspace-heading"><h2 id="history-title">History</h2><button id="history-close" type="button">Close</button></header>
+  <div class="history-layout">
+    <nav id="history-list" aria-label="Document versions"></nav>
+    <section><p id="history-detail" class="form-hint"></p><pre id="history-diff" class="history-diff"></pre></section>
+  </div>
+  <p id="history-message" class="notice" role="status" hidden></p>
+  <div class="dialog-actions"><button id="history-copy" type="button" disabled>Copy version</button><button id="history-restore" class="button-primary" type="button" disabled>Restore version</button></div>
+</dialog>
+<dialog id="trash-dialog" class="workspace-dialog" aria-labelledby="trash-title">
+  <header class="workspace-heading"><h2 id="trash-title">Recycle bin</h2><button id="trash-close" type="button">Close</button></header>
+  <p class="form-hint">Items are kept for 30 days. Restoring never overwrites an existing file or reopens old public links.</p>
+  <div id="trash-list" class="workspace-list"></div>
+  <p id="trash-message" class="notice" role="status" hidden></p>
+</dialog>

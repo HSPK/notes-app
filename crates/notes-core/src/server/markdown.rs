@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
-use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, html};
 
-use super::files;
+use super::{files, frontmatter};
+
+#[cfg(test)]
+#[path = "markdown/render_tests.rs"]
+mod render_tests;
 
 const URL_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -11,31 +15,71 @@ const URL_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'~');
 
-pub(super) fn render(path: &str, content: &str) -> String {
-    let content = body_after_frontmatter(content);
-    let options = Options::ENABLE_TABLES
+fn options() -> Options {
+    Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_FOOTNOTES;
-    let mut heading_ids = headings(content, options);
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_WIKILINKS
+}
+
+pub(super) fn resource_paths(
+    path: &str,
+    content: &str,
+) -> std::collections::BTreeMap<String, bool> {
+    let mut paths = std::collections::BTreeMap::new();
+    for event in Parser::new_ext(body_after_frontmatter(content), options()) {
+        let (target, image, wiki) = match event {
+            Event::Start(Tag::Link {
+                dest_url,
+                link_type,
+                ..
+            }) => (
+                dest_url,
+                false,
+                matches!(link_type, LinkType::WikiLink { .. }),
+            ),
+            Event::Start(Tag::Image { dest_url, .. }) => (dest_url, true, false),
+            _ => continue,
+        };
+        if let Some(target) = local_reference(path, &target, image, wiki) {
+            paths
+                .entry(target)
+                .and_modify(|only_images| *only_images &= image)
+                .or_insert(image);
+        }
+    }
+    paths
+}
+
+pub(super) fn render(path: &str, content: &str) -> String {
+    render_with_urls(path, content, |url, _| Some(url))
+}
+
+pub(super) fn render_with_urls(
+    path: &str,
+    content: &str,
+    mut resolve: impl FnMut(String, bool) -> Option<String>,
+) -> String {
+    let content = body_after_frontmatter(content);
+    let options = options();
     let mut links = Vec::new();
     let mut images = Vec::new();
-    let events = Parser::new_ext(content, options).filter_map(|event| {
+    let events = heading_events(Parser::new_ext(content, options)).filter_map(|event| {
         Some(match event {
             Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
-            Event::Start(Tag::Heading { level, .. }) => Event::Start(Tag::Heading {
-                level,
-                id: heading_ids.pop_front().map(CowStr::from),
-                classes: Vec::new(),
-                attrs: Vec::new(),
-            }),
             Event::Start(Tag::Link {
                 link_type,
                 dest_url,
                 title,
                 id,
             }) => {
-                let destination = rewrite_url(path, &dest_url, false);
+                let destination = if matches!(link_type, LinkType::WikiLink { .. }) {
+                    wiki_destination(&dest_url).and_then(|target| rewrite_url(path, &target, false))
+                } else {
+                    rewrite_url(path, &dest_url, false)
+                }
+                .and_then(|url| resolve(url, false));
                 links.push(destination.is_some());
                 let destination = destination?;
                 Event::Start(Tag::Link {
@@ -57,7 +101,8 @@ pub(super) fn render(path: &str, content: &str) -> String {
                 title,
                 id,
             }) => {
-                let destination = rewrite_url(path, &dest_url, true);
+                let destination =
+                    rewrite_url(path, &dest_url, true).and_then(|url| resolve(url, true));
                 images.push(destination.is_some());
                 let destination = destination?;
                 Event::Start(Tag::Image {
@@ -82,79 +127,68 @@ pub(super) fn render(path: &str, content: &str) -> String {
 }
 
 fn body_after_frontmatter(content: &str) -> &str {
-    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let (opening, mut remaining) = next_line(content);
-    if opening.trim_end_matches([' ', '\t']) != "---" || remaining.is_empty() {
-        return content;
-    }
-    while !remaining.is_empty() {
-        let (line, tail) = next_line(remaining);
-        if matches!(line.trim_end_matches([' ', '\t']), "---" | "...") {
-            return tail.trim_start_matches(['\r', '\n']);
-        }
-        remaining = tail;
-    }
-    content
+    frontmatter::body(content)
 }
 
-fn next_line(text: &str) -> (&str, &str) {
-    let end = text.find(['\r', '\n']).unwrap_or(text.len());
-    let ending = &text[end..];
-    let newline = if ending.starts_with("\r\n") {
-        2
-    } else if ending.is_empty() {
-        0
-    } else {
-        1
-    };
-    (&text[..end], &text[end + newline..])
-}
-
-fn headings(content: &str, options: Options) -> VecDeque<String> {
-    let mut headings = VecDeque::new();
+fn heading_events<'a>(
+    mut events: impl Iterator<Item = Event<'a>>,
+) -> impl Iterator<Item = Event<'a>> {
+    let mut pending = VecDeque::new();
     let mut counts = HashMap::<String, usize>::new();
     let mut used = HashSet::new();
-    let mut heading = None::<String>;
-    for event in Parser::new_ext(content, options) {
-        match event {
-            Event::Start(Tag::Heading { .. }) => heading = Some(String::new()),
-            Event::Text(text) | Event::Code(text) => {
-                if let Some(heading) = heading.as_mut() {
-                    for character in text.chars() {
-                        if heading.chars().count() >= 160 {
-                            break;
-                        }
+    std::iter::from_fn(move || {
+        if let Some(event) = pending.pop_front() {
+            return Some(event);
+        }
+        let event = events.next()?;
+        let Event::Start(Tag::Heading { level, .. }) = event else {
+            return Some(event);
+        };
+        // Only the current heading is buffered: its ID precedes its inline text in HTML.
+        let mut heading = String::new();
+        let mut characters = 0;
+        for event in events.by_ref() {
+            let end = matches!(event, Event::End(TagEnd::Heading(_)));
+            match &event {
+                Event::Text(text) | Event::Code(text) => {
+                    for character in text.chars().take(160 - characters) {
                         heading.push(character);
+                        characters += 1;
                     }
                 }
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                if let Some(heading) = heading.as_mut() {
+                Event::SoftBreak | Event::HardBreak => {
                     if heading.len() < 160 {
                         heading.push(' ');
+                        characters += 1;
                     }
                 }
+                _ => {}
             }
-            Event::End(TagEnd::Heading(_)) => {
-                let slug = slug(&heading.take().unwrap_or_default());
-                let count = counts.entry(slug.clone()).or_default();
-                let id = loop {
-                    *count += 1;
-                    let candidate = if *count == 1 {
-                        slug.clone()
-                    } else {
-                        format!("{slug}-{count}")
-                    };
-                    if used.insert(candidate.clone()) {
-                        break candidate;
-                    }
-                };
-                headings.push_back(id);
+            pending.push_back(event);
+            if end {
+                break;
             }
-            _ => {}
         }
-    }
-    headings
+        let slug = slug(&heading);
+        let count = counts.entry(slug.clone()).or_default();
+        let id = loop {
+            *count += 1;
+            let candidate = if *count == 1 {
+                slug.clone()
+            } else {
+                format!("{slug}-{count}")
+            };
+            if used.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        Some(Event::Start(Tag::Heading {
+            level,
+            id: Some(CowStr::from(id)),
+            classes: Vec::new(),
+            attrs: Vec::new(),
+        }))
+    })
 }
 
 fn slug(text: &str) -> String {
@@ -178,7 +212,7 @@ fn slug(text: &str) -> String {
     }
 }
 
-fn rewrite_url(document: &str, destination: &str, image: bool) -> Option<String> {
+pub(super) fn rewrite_url(document: &str, destination: &str, image: bool) -> Option<String> {
     if destination.is_empty()
         || destination.trim() != destination
         || destination.chars().any(char::is_control)
@@ -235,11 +269,14 @@ fn rewrite_url(document: &str, destination: &str, image: bool) -> Option<String>
     }
     let relative = components.join("/");
     files::validate_relative(&relative).ok()?;
-    let mut target = if !image && files::is_markdown(&relative) {
-        format!("/?file={}", encode(&relative))
-    } else {
-        format!("/assets?path={}", encode(&relative))
-    };
+    let mut target = format!(
+        "/{}",
+        relative
+            .split('/')
+            .map(encode)
+            .collect::<Vec<_>>()
+            .join("/")
+    );
     if !image {
         if let Some(fragment) = fragment {
             let fragment = percent_decode_str(fragment).decode_utf8().ok()?;
@@ -252,8 +289,95 @@ fn rewrite_url(document: &str, destination: &str, image: bool) -> Option<String>
     Some(target)
 }
 
+pub(super) fn wiki_destination(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '?' | '\\'))
+    {
+        return None;
+    }
+    let (path, fragment) = value
+        .trim()
+        .split_once('#')
+        .map(|(path, fragment)| (path, Some(fragment)))
+        .unwrap_or((value.trim(), None));
+    let mut target = if path.is_empty() || files::is_markdown(path) {
+        path.into()
+    } else {
+        format!("{path}.md")
+    };
+    if let Some(fragment) = fragment {
+        target.push('#');
+        if !fragment.is_empty() {
+            target.push_str(&slug(&fragment.chars().take(160).collect::<String>()));
+        }
+    }
+    Some(target)
+}
+
+pub(super) fn local_reference(
+    document: &str,
+    destination: &str,
+    image: bool,
+    wiki: bool,
+) -> Option<String> {
+    let target = if wiki && !image {
+        wiki_destination(destination)?
+    } else {
+        destination.into()
+    };
+    let rewritten = rewrite_url(document, &target, image)?;
+    if rewritten.starts_with('#') {
+        return Some(document.into());
+    }
+    let path = rewritten.strip_prefix('/')?;
+    percent_decode_str(path.split('#').next()?)
+        .decode_utf8()
+        .ok()
+        .map(|path| path.into_owned())
+}
+
 fn encode(value: &str) -> String {
     utf8_percent_encode(value, URL_COMPONENT).to_string()
+}
+
+pub(super) fn referenced_assets(
+    document: &str,
+    content: &str,
+) -> std::collections::BTreeSet<String> {
+    Parser::new_ext(body_after_frontmatter(content), Options::all())
+        .filter_map(|event| {
+            let (url, image) = match event {
+                Event::Start(Tag::Image { dest_url, .. }) => (dest_url, true),
+                Event::Start(Tag::Link {
+                    dest_url,
+                    link_type,
+                    ..
+                }) => {
+                    let target = if matches!(link_type, LinkType::WikiLink { .. }) {
+                        wiki_destination(&dest_url)?
+                    } else {
+                        dest_url.into_string()
+                    };
+                    let url = rewrite_url(document, &target, false)?;
+                    let path = url.strip_prefix('/')?.split('#').next()?;
+                    let path = percent_decode_str(path)
+                        .decode_utf8()
+                        .ok()
+                        .map(|path| path.into_owned())?;
+                    return (!files::is_markdown(&path)).then_some(path);
+                }
+                _ => return None,
+            };
+            let url = rewrite_url(document, &url, image)?;
+            let path = url.strip_prefix('/')?.split('#').next()?;
+            percent_decode_str(path)
+                .decode_utf8()
+                .ok()
+                .map(|path| path.into_owned())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -402,11 +526,11 @@ Reference[^one].
 ",
         );
         for expected in [
-            "href=\"/?file=%E4%BB%8B%E7%BB%8D.md#%E4%BD%A0%E5%A5%BD-%E4%B8%96%E7%95%8C\"",
+            "href=\"/%E4%BB%8B%E7%BB%8D.md#%E4%BD%A0%E5%A5%BD-%E4%B8%96%E7%95%8C\"",
             "href=\"#local\"",
-            "href=\"/?file=guides%2Foverview.MARKDOWN#my-heading\"",
-            "src=\"/assets?path=images%2Fa%20b.png\"",
-            "href=\"/assets?path=files%2Fpaper.pdf\"",
+            "href=\"/guides/overview.MARKDOWN#my-heading\"",
+            "src=\"/images/a%20b.png\"",
+            "href=\"/files/paper.pdf\"",
             "href=\"https://example.com/path?q=1\"",
             "href=\"mailto:person@example.com\"",
         ] {
@@ -430,7 +554,7 @@ Reference[^one].
         }
         assert_eq!(
             rewrite_url("a/b.md", r"..\images\x.png", true),
-            Some("/assets?path=images%2Fx.png".into())
+            Some("/images/x.png".into())
         );
     }
 

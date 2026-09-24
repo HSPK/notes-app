@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/notes-core", "crates/notes-cli", "crates/notes-core-ffi", "Windows"]
+members = ["crates/notes-core", "crates/notes-cli", "crates/notes-core-ffi", "apps/windows"]
 default-members = ["crates/notes-core", "crates/notes-cli"]
 resolver = "2"
 

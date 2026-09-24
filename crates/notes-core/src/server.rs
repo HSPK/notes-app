@@ -1,11 +1,58 @@
-//! Loopback-only Markdown service owned by the native application.
+//! Markdown service shared by native applications and the authenticated CLI.
 
+#[path = "server/accounts.rs"]
+mod accounts;
+#[path = "server/attachments.rs"]
+mod attachments;
+#[path = "server/authentication.rs"]
+mod authentication;
+#[path = "server/collaboration.rs"]
+mod collaboration;
 #[path = "server/files.rs"]
 mod files;
+#[path = "server/frontmatter.rs"]
+mod frontmatter;
+#[path = "server/git.rs"]
+mod git;
+#[path = "server/history.rs"]
+mod history;
+#[path = "server/images.rs"]
+mod images;
+#[path = "server/links.rs"]
+mod links;
+#[path = "server/listen.rs"]
+mod listen;
 #[path = "server/markdown.rs"]
 mod markdown;
 #[path = "server/net.rs"]
 mod net;
+#[path = "server/permissions.rs"]
+mod permissions;
+#[path = "server/preferences.rs"]
+mod preferences;
+#[path = "server/previews.rs"]
+mod previews;
+#[path = "server/projects.rs"]
+mod projects;
+#[path = "server/refactor.rs"]
+mod refactor;
+#[path = "server/resources.rs"]
+mod resources;
+#[path = "server/routes.rs"]
+mod routes;
+#[path = "server/search.rs"]
+mod search;
+#[path = "server/security.rs"]
+mod security;
+#[path = "server/state_store.rs"]
+mod state_store;
+#[path = "server/workspaces.rs"]
+mod workspaces;
+
+pub use listen::{
+    start, start_on, start_with_users, start_with_users_on, start_with_users_on_hosts,
+};
+pub use security::AllowedHostname;
 
 use std::future::IntoFuture;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
@@ -15,16 +62,15 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::appearance::Appearance;
+use crate::{
+    appearance::Appearance,
+    auth::AuthService,
+    settings::{SettingsStore, WebPreferences},
+};
 use axum::Json;
-use axum::Router;
-use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{DefaultBodyLimit, Extension, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::runtime::Builder;
 use tokio::sync::{Semaphore, oneshot};
 
@@ -36,7 +82,7 @@ const GRACEFUL_TIMEOUT: Duration = Duration::from_millis(250);
 const RUNTIME_TIMEOUT: Duration = Duration::from_millis(350);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-__STYLE_NONCE__'; style-src-attr 'unsafe-inline'; \
-    img-src 'self'; connect-src 'self'; font-src 'self'; \
+    img-src 'self'; connect-src 'self'; font-src 'self' data:; \
     object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const ASSET_CSP: &str = "default-src 'none'; script-src 'none'; object-src 'none'; \
     base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox";
@@ -46,6 +92,7 @@ pub struct RunningServer {
     url: String,
     root: PathBuf,
     port: u16,
+    host: Ipv4Addr,
     health: Arc<Health>,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
@@ -85,6 +132,10 @@ impl RunningServer {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    pub fn host(&self) -> Ipv4Addr {
+        self.host
     }
 
     pub fn root(&self) -> &Path {
@@ -137,14 +188,17 @@ impl Drop for RunningServer {
     }
 }
 
-/// Starts a new IPv4 loopback service. Port zero requests an ephemeral port.
-///
-/// Startup does not succeed until the listener and runtime have initialized.
-/// An occupied port is an error; no existing process is contacted or stopped.
-pub fn start(root: &Path, port: u16) -> Result<RunningServer, String> {
+fn start_configured(
+    root: &Path,
+    host: Ipv4Addr,
+    port: u16,
+    user_auth: Option<Arc<AuthService>>,
+    settings_store: Option<SettingsStore>,
+    allowed_hosts: &[AllowedHostname],
+) -> Result<RunningServer, String> {
     let root = Arc::new(files::Root::open(root).map_err(|error| error.message)?);
-    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
-        .map_err(|error| format!("Could not listen on 127.0.0.1:{port}: {error}"))?;
+    let listener = TcpListener::bind(SocketAddrV4::new(host, port))
+        .map_err(|error| format!("Could not listen on {host}:{port}: {error}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("Could not configure the HTTP listener: {error}"))?;
@@ -162,24 +216,61 @@ pub fn start(root: &Path, port: u16) -> Result<RunningServer, String> {
     let style_nonce = hex(&style_random);
     let content_policy = HeaderValue::from_str(&CSP.replace("__STYLE_NONCE__", &style_nonce))
         .map_err(|error| format!("Could not configure the editor content policy: {error}"))?;
-    let origin = format!("http://127.0.0.1:{port}");
-    let url = format!("{origin}/#token={token}");
+    let browser_host = if host.is_unspecified() {
+        Ipv4Addr::LOCALHOST
+    } else {
+        host
+    };
+    let origin = format!("http://{browser_host}:{port}");
+    let url = if user_auth.is_some() {
+        format!("{origin}/")
+    } else {
+        format!("{origin}/#token={token}")
+    };
     let health = Arc::new(Health::default());
-    let appearance = Arc::new(RwLock::new(Appearance::default()));
+    let settings = settings_store
+        .as_ref()
+        .map(SettingsStore::load)
+        .transpose()?
+        .flatten()
+        .unwrap_or_default();
+    let appearance = Arc::new(RwLock::new(settings.appearance));
+    let web_preferences = Arc::new(RwLock::new(settings.web));
+    let projects = user_auth
+        .as_ref()
+        .map(|auth| projects::Registry::open(root.clone(), auth.user_store()).map(Arc::new))
+        .transpose()?;
+    if projects.is_none() {
+        root.attach_resources(
+            state_store::Store::temporary()
+                .map_err(|error| error.message)?
+                .project("local"),
+        )
+        .map_err(|error| error.message)?;
+    }
     let state = Arc::new(AppState {
-        root: root.clone(),
+        library: Arc::new(Library::new(root.clone())),
+        projects,
+        access: None,
         port,
-        host: format!("127.0.0.1:{port}"),
-        origin,
+        host,
+        allowed_hosts: allowed_hosts.into(),
         authorization: format!("Bearer {token}"),
         cookie_name: format!("notes_session_{port}"),
+        user_cookie_name: user_auth
+            .as_ref()
+            .map(|auth| auth.cookie_name().to_owned())
+            .unwrap_or_else(|| "notes_user_session".into()),
+        user_auth,
         token,
         style_nonce,
         content_policy,
         health: health.clone(),
         requests: Arc::new(Semaphore::new(8)),
         workers: Arc::new(Semaphore::new(2)),
-        saves: Mutex::new(()),
+        settings_store,
+        settings_update: Arc::new(Mutex::new(())),
+        web_preferences,
         appearance: appearance.clone(),
     });
     let thread_health = health.clone();
@@ -218,6 +309,7 @@ pub fn start(root: &Path, port: u16) -> Result<RunningServer, String> {
         url,
         root: root.path().to_owned(),
         port,
+        host,
         health,
         shutdown: Some(shutdown),
         thread: Some(thread),
@@ -251,17 +343,26 @@ fn serve(
         .enable_all()
         .build()
         .map_err(|error| format!("Could not create the HTTP runtime: {error}"))?;
+    let git_sync = state
+        .projects
+        .as_ref()
+        .map(|registry| projects::sync::start(registry.clone(), health.clone()))
+        .transpose()?;
     let result = runtime.block_on(async {
         let listener = tokio::net::TcpListener::from_std(listener)
             .map_err(|error| format!("Could not initialize the HTTP listener: {error}"))?;
         let listener = net::LimitedListener::new(listener);
         let (graceful_tx, graceful_rx) = oneshot::channel();
         let task = tokio::spawn(
-            axum::serve(listener, router(state.clone()))
-                .with_graceful_shutdown(async move {
-                    let _ = graceful_rx.await;
-                })
-                .into_future(),
+            axum::serve(
+                listener,
+                routes::router(state.clone())
+                    .into_make_service_with_connect_info::<net::ConnectionInfo>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = graceful_rx.await;
+            })
+            .into_future(),
         );
         let abort = task.abort_handle();
         let stopping = health.clone();
@@ -283,6 +384,12 @@ fn serve(
         }
     });
     health.running.store(false, Ordering::Release);
+    health.stopping.store(true, Ordering::Release);
+    if let Some(worker) = git_sync {
+        if worker.join().is_err() {
+            return Err("Automatic Git sync worker failed.".into());
+        }
+    }
     runtime.shutdown_timeout(RUNTIME_TIMEOUT);
     if state.workers.available_permits() != 2 {
         Err(
@@ -294,23 +401,79 @@ fn serve(
     }
 }
 
-struct AppState {
+struct Library {
+    collaboration: collaboration::Hub,
     root: Arc<files::Root>,
+    git: git::Service,
+    saves: Mutex<()>,
+    preview_cache: Mutex<previews::Cache>,
+    store: Option<state_store::ProjectStore>,
+    index_state: Mutex<search::IndexState>,
+    index_dirty: AtomicBool,
+}
+
+impl Library {
+    fn new(root: Arc<files::Root>) -> Self {
+        Self {
+            git: git::Service::new(root.path().to_owned()),
+            root,
+            collaboration: collaboration::Hub::default(),
+            saves: Mutex::new(()),
+            preview_cache: Mutex::new(previews::Cache::default()),
+            store: None,
+            index_state: Mutex::new(search::IndexState::default()),
+            index_dirty: AtomicBool::new(true),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AppState {
+    library: Arc<Library>,
+    projects: Option<Arc<projects::Registry>>,
+    access: Option<projects::Access>,
     port: u16,
-    host: String,
-    origin: String,
+    host: Ipv4Addr,
+    allowed_hosts: Arc<[AllowedHostname]>,
     authorization: String,
     cookie_name: String,
+    user_cookie_name: String,
+    user_auth: Option<Arc<AuthService>>,
     token: String,
     style_nonce: String,
     content_policy: HeaderValue,
     health: Arc<Health>,
     requests: Arc<Semaphore>,
     workers: Arc<Semaphore>,
-    saves: Mutex<()>,
+    settings_store: Option<SettingsStore>,
+    settings_update: Arc<Mutex<()>>,
+    web_preferences: Arc<RwLock<WebPreferences>>,
     appearance: Arc<RwLock<Appearance>>,
 }
 
+impl std::ops::Deref for AppState {
+    type Target = Library;
+    fn deref(&self) -> &Library {
+        &self.library
+    }
+}
+
+impl AppState {
+    fn authorize(&self, path: Option<&str>, write: bool) -> Result<(), ApiError> {
+        match &self.access {
+            Some(access) => access.check(path, write),
+            None if self.user_auth.is_none() => Ok(()),
+            None => Err(ApiError::forbidden("Select an accessible project first.")),
+        }
+    }
+
+    fn owner(&self) -> Result<(), ApiError> {
+        match &self.access {
+            Some(access) => access.owner(),
+            None => self.authorize(None, true),
+        }
+    }
+}
 struct Work {
     cancelled: AtomicBool,
     deadline: Instant,
@@ -341,448 +504,6 @@ impl Drop for CancelWork {
     fn drop(&mut self) {
         self.0.cancelled.store(true, Ordering::Release);
     }
-}
-
-fn router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/", get(index))
-        .route("/favicon.ico", get(app_icon))
-        .route("/icon.svg", get(vector_icon))
-        .route("/app.mjs", get(app_script))
-        .route("/model.mjs", get(model_script))
-        .route("/styles.css", get(styles))
-        .route("/editor.bundle.mjs", get(editor_script))
-        .route("/editor.bundle.css", get(editor_styles))
-        .route("/editor-helpers.mjs", get(editor_helpers))
-        .route("/THIRD-PARTY-LICENSES.txt", get(editor_licenses))
-        .route("/api/session", post(session))
-        .route("/api/appearance", get(appearance))
-        .route("/api/tree", get(tree))
-        .route(
-            "/api/document",
-            get(document).put(save_document).post(create_document),
-        )
-        .route("/api/preview", post(preview))
-        .route("/assets", get(asset))
-        .fallback(not_found)
-        .method_not_allowed_fallback(method_not_allowed)
-        .layer(DefaultBodyLimit::max(MAX_JSON_BYTES))
-        .layer(middleware::from_fn_with_state(state.clone(), guard))
-        .with_state(state)
-}
-
-async fn guard(State(state): State<Arc<AppState>>, mut request: Request, next: Next) -> Response {
-    let asset_request = request.uri().path() == "/assets";
-    let response = match check_request(&state, &request) {
-        Err(error) => error.into_response(),
-        Ok(()) => match state.requests.clone().try_acquire_owned() {
-            Err(_) => ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The local server is busy. Please try again.",
-            )
-            .into_response(),
-            Ok(_permit) => {
-                let work = Arc::new(Work {
-                    cancelled: AtomicBool::new(false),
-                    deadline: Instant::now() + REQUEST_TIMEOUT,
-                    health: state.health.clone(),
-                });
-                request.extensions_mut().insert(work.clone());
-                let _cancel = CancelWork(work);
-                match tokio::time::timeout(REQUEST_TIMEOUT, next.run(request)).await {
-                    Ok(response) => response,
-                    Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "The request timed out.")
-                        .into_response(),
-                }
-            }
-        },
-    };
-    secure_headers(response, asset_request, &state.content_policy)
-}
-
-fn check_request(state: &AppState, request: &Request) -> Result<(), ApiError> {
-    let headers = request.headers();
-    if headers.get_all(header::HOST).iter().count() != 1
-        || headers
-            .get(header::HOST)
-            .and_then(|value| value.to_str().ok())
-            != Some(state.host.as_str())
-    {
-        return Err(ApiError::forbidden(
-            "The request Host is not this local server.",
-        ));
-    }
-    if headers.get_all(header::ORIGIN).iter().count() > 1
-        || headers
-            .get(header::ORIGIN)
-            .is_some_and(|value| value.to_str().ok() != Some(state.origin.as_str()))
-    {
-        return Err(ApiError::forbidden(
-            "Cross-origin requests are not allowed.",
-        ));
-    }
-    if request.uri().path().starts_with("/api/") {
-        let authorization = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("");
-        if headers.get_all(header::AUTHORIZATION).iter().count() != 1
-            || !secret_eq(authorization, &state.authorization)
-        {
-            return Err(ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "Open the browser using this server's authenticated launch URL.",
-            ));
-        }
-    }
-    if request.uri().path() == "/assets" && !has_session_cookie(headers, state) {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "An authenticated browser session is required for attachments.",
-        ));
-    }
-    if headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|size| size > MAX_JSON_BYTES as u64)
-    {
-        return Err(ApiError::too_large("The request body is too large."));
-    }
-    Ok(())
-}
-
-fn secret_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
-}
-
-fn has_session_cookie(headers: &HeaderMap, state: &AppState) -> bool {
-    let mut matches = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(';'))
-        .filter_map(|part| part.trim().split_once('='))
-        .filter(|(name, _)| *name == state.cookie_name);
-    matches
-        .next()
-        .is_some_and(|(_, value)| secret_eq(value, &state.token))
-        && matches.next().is_none()
-}
-
-fn secure_headers(mut response: Response, asset: bool, content_policy: &HeaderValue) -> Response {
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        if asset {
-            HeaderValue::from_static(ASSET_CSP)
-        } else {
-            content_policy.clone()
-        },
-    );
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(
-        "cross-origin-resource-policy",
-        HeaderValue::from_static("same-origin"),
-    );
-    response
-}
-
-async fn index(State(state): State<Arc<AppState>>) -> Response {
-    let page = include_str!("../../../web/public/index.html")
-        .replace("__STYLE_NONCE__", &state.style_nonce);
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
-}
-
-async fn app_script() -> Response {
-    embedded(
-        "text/javascript; charset=utf-8",
-        include_bytes!("../../../web/public/app.mjs"),
-    )
-}
-
-async fn model_script() -> Response {
-    embedded(
-        "text/javascript; charset=utf-8",
-        include_bytes!("../../../web/public/model.mjs"),
-    )
-}
-
-async fn styles() -> Response {
-    embedded(
-        "text/css; charset=utf-8",
-        include_bytes!("../../../web/public/styles.css"),
-    )
-}
-
-async fn editor_script() -> Response {
-    embedded(
-        "text/javascript; charset=utf-8",
-        include_bytes!("../../../web/public/editor.bundle.mjs"),
-    )
-}
-
-async fn editor_styles() -> Response {
-    embedded(
-        "text/css; charset=utf-8",
-        include_bytes!("../../../web/public/editor.bundle.css"),
-    )
-}
-
-async fn editor_helpers() -> Response {
-    embedded(
-        "text/javascript; charset=utf-8",
-        include_bytes!("../../../web/public/editor-helpers.mjs"),
-    )
-}
-
-async fn editor_licenses() -> Response {
-    embedded(
-        "text/plain; charset=utf-8",
-        include_bytes!("../../../web/public/THIRD-PARTY-LICENSES.txt"),
-    )
-}
-
-async fn app_icon() -> Response {
-    embedded(
-        "image/x-icon",
-        include_bytes!("../../../Shared/Resources/Notes.ico"),
-    )
-}
-
-async fn vector_icon() -> Response {
-    embedded(
-        "image/svg+xml",
-        include_bytes!("../../../Shared/Resources/NotesIcon.svg"),
-    )
-}
-
-fn embedded(content_type: &'static str, bytes: &'static [u8]) -> Response {
-    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
-}
-
-#[derive(Serialize)]
-struct Session {
-    root: String,
-    port: u16,
-}
-
-async fn session(State(state): State<Arc<AppState>>) -> Response {
-    let mut response = Json(Session {
-        root: state.root.path().to_string_lossy().into_owned(),
-        port: state.port,
-    })
-    .into_response();
-    let cookie = format!(
-        "{}={}; Path=/assets; HttpOnly; SameSite=Strict",
-        state.cookie_name, state.token
-    );
-    match HeaderValue::from_str(&cookie) {
-        Ok(cookie) => {
-            response.headers_mut().insert(header::SET_COOKIE, cookie);
-            response
-        }
-        Err(_) => ApiError::internal("Could not establish the browser session.").into_response(),
-    }
-}
-
-async fn tree(
-    State(state): State<Arc<AppState>>,
-    Extension(work): Extension<Arc<Work>>,
-) -> Result<Json<files::Tree>, ApiError> {
-    blocking(state, work, |state, _| state.root.tree())
-        .await
-        .map(Json)
-}
-
-async fn appearance(State(state): State<Arc<AppState>>) -> Result<Json<Appearance>, ApiError> {
-    state
-        .appearance
-        .read()
-        .map(|appearance| Json(appearance.clone()))
-        .map_err(|_| ApiError::internal("The appearance settings are unavailable."))
-}
-
-#[derive(Deserialize)]
-struct PathQuery {
-    path: String,
-}
-
-async fn document(
-    State(state): State<Arc<AppState>>,
-    Extension(work): Extension<Arc<Work>>,
-    query: Result<Query<PathQuery>, QueryRejection>,
-) -> Result<Json<files::Document>, ApiError> {
-    let Query(query) = query.map_err(query_error)?;
-    blocking(state, work, move |state, _| {
-        state.root.document(&query.path)
-    })
-    .await
-    .map(Json)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SaveDocument {
-    path: String,
-    content: String,
-    version: String,
-}
-
-async fn save_document(
-    State(state): State<Arc<AppState>>,
-    Extension(work): Extension<Arc<Work>>,
-    body: Result<Json<SaveDocument>, JsonRejection>,
-) -> Result<Json<files::Document>, ApiError> {
-    let Json(body) = body.map_err(json_error)?;
-    blocking(state, work, move |state, work| {
-        let _save = state
-            .saves
-            .lock()
-            .map_err(|_| ApiError::internal("The document save lock was poisoned."))?;
-        state
-            .root
-            .save(&body.path, &body.content, &body.version, || work.check())
-    })
-    .await
-    .map(Json)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NewDocument {
-    path: String,
-    content: String,
-}
-
-async fn create_document(
-    State(state): State<Arc<AppState>>,
-    Extension(work): Extension<Arc<Work>>,
-    body: Result<Json<NewDocument>, JsonRejection>,
-) -> Result<(StatusCode, Json<files::Document>), ApiError> {
-    let Json(body) = body.map_err(json_error)?;
-    blocking(state, work, move |state, work| {
-        let _save = state
-            .saves
-            .lock()
-            .map_err(|_| ApiError::internal("The document save lock was poisoned."))?;
-        state
-            .root
-            .create(&body.path, &body.content, || work.check())
-    })
-    .await
-    .map(|document| (StatusCode::CREATED, Json(document)))
-}
-
-#[derive(Serialize)]
-struct Preview {
-    html: String,
-}
-
-async fn preview(
-    State(state): State<Arc<AppState>>,
-    Extension(work): Extension<Arc<Work>>,
-    body: Result<Json<NewDocument>, JsonRejection>,
-) -> Result<Json<Preview>, ApiError> {
-    let Json(body) = body.map_err(json_error)?;
-    blocking(state, work, move |_, _| {
-        files::validate_document_path(&body.path)?;
-        files::validate_content(body.content.as_bytes())?;
-        Ok(Preview {
-            html: markdown::render(
-                &body.path,
-                body.content
-                    .strip_prefix('\u{feff}')
-                    .unwrap_or(&body.content),
-            ),
-        })
-    })
-    .await
-    .map(Json)
-}
-
-async fn asset(
-    State(state): State<Arc<AppState>>,
-    Extension(work): Extension<Arc<Work>>,
-    query: Result<Query<PathQuery>, QueryRejection>,
-) -> Result<Response, ApiError> {
-    let Query(query) = query.map_err(query_error)?;
-    let asset = blocking(state, work, move |state, _| state.root.asset(&query.path)).await?;
-    let mut response = ([(header::CONTENT_TYPE, asset.mime)], asset.bytes).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_static(if asset.download {
-            "attachment"
-        } else {
-            "inline"
-        }),
-    );
-    Ok(response)
-}
-
-async fn blocking<T, F>(state: Arc<AppState>, work: Arc<Work>, operation: F) -> Result<T, ApiError>
-where
-    T: Send + 'static,
-    F: FnOnce(&AppState, &Work) -> Result<T, ApiError> + Send + 'static,
-{
-    let permit = state.workers.clone().try_acquire_owned().map_err(|_| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The document worker is busy. Please try again.",
-        )
-    })?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        work.check()?;
-        let result = operation(&state, &work)?;
-        work.check()?;
-        Ok(result)
-    })
-    .await
-    .map_err(|error| ApiError::internal(format!("The document worker failed: {error}")))?
-}
-
-fn json_error(error: JsonRejection) -> ApiError {
-    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        ApiError::too_large("The request body is too large.")
-    } else {
-        ApiError::bad_request(format!("Invalid JSON request: {}", error.body_text()))
-    }
-}
-
-fn query_error(error: QueryRejection) -> ApiError {
-    ApiError::bad_request(format!(
-        "Invalid document path query: {}",
-        error.body_text()
-    ))
-}
-
-async fn not_found() -> ApiError {
-    ApiError::new(StatusCode::NOT_FOUND, "This endpoint does not exist.")
-}
-
-async fn method_not_allowed() -> ApiError {
-    ApiError::new(
-        StatusCode::METHOD_NOT_ALLOWED,
-        "This HTTP method is not allowed.",
-    )
 }
 
 #[derive(Debug)]

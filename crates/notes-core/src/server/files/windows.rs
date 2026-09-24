@@ -11,7 +11,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 
-use super::{ApiError, check_name};
+use super::{ApiError, EntryFingerprint, check_name};
 
 pub(in super::super) struct Directory {
     file: File,
@@ -35,6 +35,16 @@ impl EntryMetadata {
 
     pub(in super::super) fn is_hidden(&self) -> bool {
         self.0.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0
+    }
+
+    pub(in super::super) fn fingerprint(&self) -> EntryFingerprint {
+        EntryFingerprint([
+            self.0.file_size(),
+            self.0.last_write_time(),
+            self.0.creation_time(),
+            self.0.file_attributes() as u64,
+            0,
+        ])
     }
 }
 
@@ -125,6 +135,42 @@ impl Directory {
             .write(true)
             .create_new(true)
             .open(self.child_path(name)?)
+    }
+
+    pub(in super::super) fn create_dir(&self, name: &OsStr) -> io::Result<()> {
+        fs::create_dir(self.child_path(name)?)
+    }
+
+    pub(in super::super) fn move_entry_to(
+        &self,
+        source: &OsStr,
+        destination_parent: &Self,
+        destination: &OsStr,
+    ) -> io::Result<()> {
+        let source = self
+            .child_path(source)?
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let destination = destination_parent
+            .child_path(destination)?
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     pub(in super::super) fn entries(

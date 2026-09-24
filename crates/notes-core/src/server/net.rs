@@ -2,14 +2,15 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use axum::extract::connect_info::Connected;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::Sleep;
+use tokio::time::{Instant, Sleep};
 
 pub(super) struct LimitedListener {
     listener: TcpListener,
@@ -20,7 +21,7 @@ impl LimitedListener {
     pub(super) fn new(listener: TcpListener) -> Self {
         Self {
             listener,
-            connections: Arc::new(Semaphore::new(16)),
+            connections: Arc::new(Semaphore::new(128)),
         }
     }
 }
@@ -49,6 +50,9 @@ impl axum::serve::Listener for LimitedListener {
                             stream,
                             _permit: permit,
                             deadline: Box::pin(tokio::time::sleep(Duration::from_secs(30))),
+                            control: ConnectionInfo(Arc::new(Mutex::new(Some(
+                                Instant::now() + Duration::from_secs(30),
+                            )))),
                         },
                         address,
                     );
@@ -75,10 +79,48 @@ pub(super) struct Connection {
     _permit: OwnedSemaphorePermit,
     // A hard lifetime also bounds a client that slowly drips incomplete headers.
     deadline: Pin<Box<Sleep>>,
+    control: ConnectionInfo,
+}
+
+#[derive(Clone)]
+pub(super) struct ConnectionInfo(Arc<Mutex<Option<Instant>>>);
+
+impl<'a> Connected<axum::serve::IncomingStream<'a, LimitedListener>> for ConnectionInfo {
+    fn connect_info(stream: axum::serve::IncomingStream<'a, LimitedListener>) -> Self {
+        stream.io().control.clone()
+    }
+}
+
+impl ConnectionInfo {
+    pub(super) fn allow_request(&self, timeout: Duration) {
+        if let Ok(mut deadline) = self.0.lock() {
+            *deadline = Some(Instant::now() + timeout);
+        } else {
+            eprintln!("Could not extend connection deadline: lock poisoned.");
+        }
+    }
+
+    pub(super) fn websocket(&self) {
+        if let Ok(mut deadline) = self.0.lock() {
+            *deadline = None;
+        } else {
+            eprintln!("Could not activate WebSocket: deadline lock poisoned.");
+        }
+    }
 }
 
 impl Connection {
     fn expired(&mut self, cx: &mut Context<'_>) -> bool {
+        let deadline = match self.control.0.lock() {
+            Ok(deadline) => *deadline,
+            Err(_) => return true,
+        };
+        let Some(deadline) = deadline else {
+            return false;
+        };
+        if self.deadline.deadline() != deadline {
+            self.deadline.as_mut().reset(deadline);
+        }
         self.deadline.as_mut().poll(cx).is_ready()
     }
 }

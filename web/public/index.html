@@ -10,22 +10,59 @@
     <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 256x256">
     <link rel="icon" href="/icon.svg" type="image/svg+xml" sizes="any">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/workspace.css">
     <link rel="stylesheet" href="/editor.bundle.css">
     <script type="module" src="/app.mjs"></script>
   </head>
   <body data-sidebar="open">
     <a class="skip-link" href="#editor">Skip to document</a>
-    <div class="app-shell">
+    <main id="auth-screen" class="auth-screen" aria-labelledby="auth-title" hidden>
+      <section class="auth-card">
+        <img src="/icon.svg" alt="" width="52" height="52">
+        <h1 id="auth-title">Log in to Notes</h1>
+        <p id="auth-description">Enter your local Notes account.</p>
+        <form id="auth-form">
+          <div id="auth-invitation-field" hidden>
+            <label for="auth-invitation">Invitation key</label>
+            <input id="auth-invitation" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="128">
+          </div>
+          <label for="auth-username">Username</label>
+          <input id="auth-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required minlength="3" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,63}">
+          <label for="auth-password">Password</label>
+          <input id="auth-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+          <div id="auth-confirm-field" hidden>
+            <label for="auth-confirm">Confirm password</label>
+            <input id="auth-confirm" name="confirm" type="password" autocomplete="new-password" maxlength="1024">
+          </div>
+          <p id="auth-hint" class="form-hint"></p>
+          <p id="auth-error" class="notice is-error" role="alert" hidden></p>
+          <button id="auth-submit" class="button-primary auth-submit" type="submit">Log in</button>
+          <button id="auth-use-invitation" class="auth-mode-switch" type="button" hidden>Create account with an invitation</button>
+          <button id="auth-back-login" class="auth-mode-switch" type="button" hidden>Back to login</button>
+        </form>
+      </section>
+    </main>
+    <div id="app-shell" class="app-shell">
       <aside id="sidebar" class="sidebar" aria-label="Library">
-        <header class="library-heading">
-          <span class="app-name">Notes</span>
-          <button id="new-note" class="icon-button" type="button" title="New note" aria-label="New note" disabled>
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
-          </button>
+        <header class="library-heading" data-directory-path="">
+          <span id="app-name" class="app-name">Notes</span>
+          <button id="projects-open" class="app-name project-switcher" type="button" title="Switch or manage projects" hidden>Projects</button>
+          <div class="library-actions">
+            <button id="new-note" class="icon-button" type="button" title="New note" aria-label="New note" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5h7l3 3v10H5zM12 3.5v3h3M10 9v5M7.5 11.5h5"/></svg>
+            </button>
+            <button id="new-folder" class="icon-button" type="button" title="New folder" aria-label="New folder" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.5h6l1.5 2h7.5v9h-15zM13.5 9.5v4M11.5 11.5h4"/></svg>
+            </button>
+            <button id="refresh-files" class="icon-button" type="button" title="Refresh files" aria-label="Refresh files" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a6 6 0 1 0 .1 5M16 3v4h-4"/></svg>
+            </button>
+          </div>
         </header>
         <div class="sidebar-tabs" role="tablist" aria-label="Sidebar">
           <button id="files-tab" role="tab" aria-controls="files-panel" aria-selected="true" type="button">Files</button>
           <button id="outline-tab" role="tab" aria-controls="outline-panel" aria-selected="false" tabindex="-1" type="button">Outline</button>
+          <button id="git-tab" role="tab" aria-controls="git-panel" aria-selected="false" tabindex="-1" type="button">Git</button>
         </div>
         <section id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
           <div class="search-field">
@@ -47,50 +84,103 @@
             <nav id="outline-scroll" aria-label="Document outline"><ul id="outline-list" class="outline-list"></ul></nav>
           </div>
         </section>
-        <footer class="sidebar-footer">
-          <details id="library-menu" class="popup library-menu">
-            <summary title="Notes folder"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.5h6l1.5 2h7.5v9h-15zM2.5 5.5v-2h6l1.5 2h7.5v2"/></svg><span id="library-name">Notes folder</span></summary>
-            <div class="popup-panel folder-panel">
-              <strong>Notes folder</strong>
-              <span id="root-path">Choose a folder in Settings or with the CLI.</span>
-              <p>Change the folder in the desktop app's Settings, or restart the CLI with --serve.</p>
-              <button id="refresh-files" type="button" disabled>Refresh files</button>
+        <section id="git-panel" class="sidebar-panel git-panel" role="tabpanel" aria-labelledby="git-tab" hidden>
+          <header class="git-header">
+            <div class="git-repository">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="6" cy="4" r="2"/><circle cx="6" cy="16" r="2"/><circle cx="14" cy="5" r="2"/><path d="M6 6v8M14 7v2a4 4 0 0 1-4 4H6"/></svg>
+              <div><strong id="git-branch">Source control</strong><span id="git-sync-state"></span></div>
             </div>
-          </details>
-          <span id="file-count" class="file-count"></span>
-        </footer>
+            <button id="git-refresh" class="icon-button" type="button" title="Refresh Git status" aria-label="Refresh Git status">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a6 6 0 1 0 .1 5M16 3v4h-4"/></svg>
+            </button>
+          </header>
+          <div class="git-remote-actions" aria-label="Remote actions">
+            <button id="git-pull" type="button" title="Pull from upstream (fast-forward only)" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v10m-4-4 4 4 4-4M4 14v3h12v-3"/></svg>
+              <span>Pull</span><span id="git-behind" class="git-count" hidden></span>
+            </button>
+            <button id="git-push" type="button" title="Push commits to upstream" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3M6 7l4-4 4 4M4 14v3h12v-3"/></svg>
+              <span>Push</span><span id="git-ahead" class="git-count" hidden></span>
+            </button>
+          </div>
+          <p id="git-message" class="git-message" role="status">Open Git to inspect this library.</p>
+          <div id="git-scroll-frame" class="scroll-frame" data-overlayscrollbars-initialize>
+            <div id="git-scroll" class="git-scroll">
+              <div id="git-file-list"></div>
+              <div id="git-empty" class="git-empty" hidden>
+                <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12"/><path d="m10 16 4 4 8-8"/></svg>
+                <strong>All changes committed</strong>
+                <span>Your next saved edit will appear here.</span>
+              </div>
+            </div>
+          </div>
+          <form id="git-commit-form" class="git-commit-form">
+            <label for="git-commit-message">Commit message</label>
+            <textarea id="git-commit-message" rows="3" maxlength="4096" placeholder="Describe your changes"></textarea>
+            <button id="git-commit" class="button-primary" type="submit" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>
+              <span>Commit staged files</span><span id="git-staged-count" class="git-count" hidden></span>
+            </button>
+            <p id="git-commit-hint">Stage changes before committing.</p>
+          </form>
+        </section>
       </aside>
+      <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin="210" aria-valuemax="420" aria-valuenow="260" tabindex="0"></div>
 
       <main class="document-area" aria-labelledby="document-title">
         <header class="document-header">
           <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle sidebar (Ctrl+Shift+L)" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="true">
             <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="1"/><path d="M7.5 3.5v13"/></svg>
           </button>
-          <h1 id="document-title">Untitled</h1>
-          <div class="document-actions">
-            <details id="view-menu" class="popup">
-              <summary id="view-label" title="Document view">Live</summary>
-              <div class="popup-panel view-switcher" role="group" aria-label="Document view">
-                <button id="view-rich" type="button" data-view="rich" aria-pressed="true">Live editing</button>
-                <button id="view-editor" type="button" data-view="editor" aria-pressed="false">Markdown source</button>
-                <button id="view-split" type="button" data-view="split" aria-pressed="false">Source and preview</button>
-                <button id="view-preview" type="button" data-view="preview" aria-pressed="false">Read only</button>
+          <h1 id="document-title"><span id="document-name">Untitled</span><span id="document-modified" role="img" aria-label="Unsaved changes" hidden></span></h1>
+          <div id="collaboration-people" class="collaboration-people" role="group" aria-label="People editing this note"></div>
+          <nav class="document-actions menu-bar" aria-label="Document menu">
+            <button id="collaboration-join" class="collaboration-join" type="button" hidden>Collaborate</button>
+            <details id="view-menu" class="popup menu-bar-item">
+              <summary><span id="view-label">Live</span></summary>
+              <div class="popup-panel view-options" role="group" aria-label="Document view">
+                <button id="view-rich" type="button" data-view="rich" aria-pressed="true">Live</button>
+                <button id="view-editor" type="button" data-view="editor" aria-pressed="false">Source</button>
+                <button id="view-split" type="button" data-view="split" aria-pressed="false">Compare</button>
+                <button id="view-preview" type="button" data-view="preview" aria-pressed="false">Read</button>
               </div>
             </details>
-            <button id="format-toggle" class="icon-button format-toggle" type="button" title="Formatting" aria-label="Formatting" aria-controls="format-panel" aria-expanded="false">Aa</button>
-            <button id="save-document" class="save-button" type="button" title="Save (Ctrl+S)" aria-keyshortcuts="Control+S" disabled><span id="save-label">Save</span></button>
+            <details id="layout-menu" class="popup layout-menu">
+              <summary class="icon-button" title="Page width" aria-label="Adjust page width">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h14M7 6l-4 4 4 4M13 6l4 4-4 4"/></svg>
+              </summary>
+              <div class="popup-panel layout-options" role="group" aria-label="Page width">
+                <button type="button" data-page-width="focused" aria-pressed="false">Focused</button>
+                <button type="button" data-page-width="balanced" aria-pressed="true">Balanced</button>
+                <button type="button" data-page-width="wide" aria-pressed="false">Wide</button>
+              </div>
+            </details>
+            <button id="command-palette-open" class="icon-button" type="button" title="Commands (Ctrl+K)" aria-label="Open command panel" hidden>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5H5.5a2.5 2.5 0 1 0 0 5H7V5ZM13 5h1.5a2.5 2.5 0 1 1 0 5H13V5ZM7 10H5.5a2.5 2.5 0 1 0 0 5H7v-5ZM13 10h1.5a2.5 2.5 0 1 1 0 5H13v-5ZM7 5h6v10H7z"/></svg>
+            </button>
+            <button id="settings-open" class="icon-button" type="button" title="Settings" aria-label="Open settings">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.5"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4"/></svg>
+            </button>
             <details id="more-menu" class="popup">
               <summary class="icon-button" title="More actions" aria-label="More actions"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="16" cy="10" r="1"/></svg></summary>
               <div class="popup-panel">
-                <button id="reload-document" type="button" disabled>Reload from disk</button>
-                <button id="copy-text" type="button" disabled>Copy Markdown</button>
-                <button id="focus-mode" type="button" aria-pressed="false">Distraction-free <kbd>Ctrl+Shift+F</kbd></button>
-                <a href="/THIRD-PARTY-LICENSES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a>
+                <div class="menu-group" role="group" aria-label="Document actions">
+                  <button id="reload-document" type="button" disabled>Reload from disk</button>
+                  <button id="copy-text" type="button" disabled>Copy Markdown</button>
+                  <button id="share-page" type="button" hidden>Share page</button>
+                </div>
+                <div class="menu-group" role="group" aria-label="Application">
+                  <button id="focus-mode" type="button" aria-pressed="false">Distraction free</button>
+                  <button id="logout" type="button" hidden>Log out</button>
+                  <a href="/THIRD-PARTY-LICENSES.txt" target="_blank" rel="noopener noreferrer">Third-party licenses</a>
+                </div>
               </div>
             </details>
-          </div>
+          </nav>
         </header>
         <div class="document-alerts">
+          <div id="collaboration-message" class="notice" role="status" hidden></div>
           <div id="connection-message" class="notice" role="alert" hidden></div>
           <div id="appearance-message" class="notice is-warning" role="status" hidden></div>
           <div id="conflict-message" class="notice is-warning" role="alert" hidden></div>
@@ -99,15 +189,12 @@
           <div id="size-warning" class="notice is-error" role="alert" hidden></div>
           <div id="rich-warning" class="notice is-warning" role="status" hidden></div>
         </div>
-        <div id="format-panel" class="format-panel" hidden>
-          <div id="format-toolbar" class="format-toolbar" role="group" aria-label="Text formatting"></div>
-        </div>
         <section id="empty-document" class="empty-document">
           <svg viewBox="0 0 48 56" aria-hidden="true"><path d="M9 3h20l10 10v40H9zM29 3v11h10M17 25h14M17 33h14M17 41h9"/></svg>
           <h2>A place to write.</h2>
           <p>Open a note from the sidebar, or start a new one.</p>
           <button id="empty-new-note" type="button" disabled>New note</button>
-          <p class="writing-hint">Edit directly in the formatted page.<br>Use Source when you need the original Markdown.</p>
+          <p class="writing-hint">Edit directly in the formatted page.<br>Type / on an empty line to insert a block.</p>
         </section>
         <div id="document-panes" class="document-panes" data-view="rich" hidden>
           <section class="rich-pane" aria-label="Live formatted editing">
@@ -128,20 +215,55 @@
           <span id="copy-status" class="visually-hidden" role="status"></span>
           <div class="status-right">
             <span id="editor-stats"></span>
-            <span id="connection-label" class="connection-label" role="status">Connecting…</span>
+            <span id="connection-label" class="connection-label" role="status" hidden>Connecting…</span>
             <button id="reconnect" type="button" disabled>Reconnect</button>
           </div>
         </footer>
       </main>
     </div>
     <button id="sidebar-scrim" type="button" aria-label="Close sidebar" tabindex="-1" hidden></button>
-
-    <dialog id="new-note-dialog" aria-labelledby="new-note-title">
+    <div id="collaboration-cursors" aria-hidden="true"></div>
+    <dialog id="projects-dialog" class="projects-dialog" aria-labelledby="projects-title">
+      <header class="projects-heading"><h2 id="projects-title">Projects</h2><button id="projects-close" type="button" aria-label="Close projects">Close</button></header>
+      <div id="projects-list" class="projects-list"></div>
+      <form id="project-create-form">
+        <h3>New project</h3>
+        <label for="project-name">Name</label><input id="project-name" maxlength="200" required autocomplete="off">
+        <label for="project-kind">Source</label>
+        <select id="project-kind"><option value="new">New private folder</option><option value="github">GitHub repository</option><option value="folder" data-admin-only>Existing server folder (admin)</option></select>
+        <div id="project-source-field" hidden><label for="project-source">GitHub repository / absolute server path</label><input id="project-source" autocomplete="off" spellcheck="false"></div>
+        <div id="project-token-field" hidden><label for="project-token">Project GitHub token (optional for public repositories)</label><input id="project-token" type="password" autocomplete="new-password" maxlength="512"></div>
+        <div class="dialog-actions"><button id="project-create" class="button-primary" type="submit">Create project</button></div>
+      </form>
+      <p id="project-error" class="notice is-error dialog-status" role="alert" hidden></p>
+    </dialog>
+    <dialog id="sharing-dialog" aria-labelledby="sharing-title">
+      <form id="sharing-form">
+        <h2 id="sharing-title">Sharing</h2>
+        <p id="sharing-description" class="form-hint"></p>
+        <label for="sharing-level">Access</label>
+        <select id="sharing-level"><option value="private">No separate sharing</option><option value="read">Can read</option><option value="edit">Can edit together</option></select>
+        <div id="sharing-project-fields">
+          <label for="sharing-name">Project name</label><input id="sharing-name" maxlength="200" required>
+          <label for="sharing-image-directory">Pasted image directory (relative to project)</label><input id="sharing-image-directory" required maxlength="512" placeholder="assets/images">
+          <div id="sharing-credential-field" hidden><label for="sharing-token">Replace GitHub token (leave blank to keep)</label><input id="sharing-token" type="password" autocomplete="new-password" maxlength="512"></div>
+          <div id="sharing-documents" class="projects-list" aria-label="Documents with independent permissions"></div>
+        </div>
+        <div id="sharing-public-fields" hidden>
+          <label><input id="sharing-public-edit" type="checkbox">Allow anonymous editing</label>
+          <label for="sharing-public-url">Public link</label><input id="sharing-public-url" type="text" readonly placeholder="Save to create a link">
+          <button id="sharing-reset-link" type="button" hidden>Reset public link</button>
+        </div>
+        <p id="sharing-error" class="notice is-error dialog-status" role="alert" hidden></p>
+        <div class="dialog-actions"><button id="sharing-copy-link" type="button">Copy link</button><button id="sharing-cancel" type="button">Cancel</button><button id="sharing-save" class="button-primary" type="submit">Save</button></div>
+      </form>
+    </dialog>
+    <dialog id="new-note-dialog" aria-labelledby="new-note-heading">
       <form id="new-note-form">
-        <h2 id="new-note-title">New note</h2>
-        <label for="new-note-path">File name</label>
-        <input id="new-note-path" name="path" type="text" placeholder="Untitled.md" autocomplete="off" spellcheck="false" aria-describedby="new-note-hint new-note-error" required>
-        <p id="new-note-hint" class="form-hint">Use .md or .markdown. You can include an existing subfolder.</p>
+        <h2 id="new-note-heading">New note</h2>
+        <label for="new-note-title">Title</label>
+        <input id="new-note-title" name="title" type="text" placeholder="Untitled" autocomplete="off" aria-describedby="new-note-hint new-note-error" required>
+        <p id="new-note-hint" class="form-hint"></p>
         <p id="new-note-error" class="notice is-error" role="alert" hidden></p>
         <div class="dialog-actions">
           <button id="cancel-new-note" type="button">Cancel</button>
@@ -149,6 +271,329 @@
         </div>
       </form>
     </dialog>
+    <dialog id="new-folder-dialog" aria-labelledby="new-folder-title">
+      <form id="new-folder-form">
+        <h2 id="new-folder-title">New folder</h2>
+        <label for="new-folder-path">Folder path</label>
+        <input id="new-folder-path" name="path" type="text" placeholder="New folder" autocomplete="off" spellcheck="false" aria-describedby="new-folder-hint new-folder-error" required>
+        <p id="new-folder-hint" class="form-hint">Create it inside an existing folder.</p>
+        <p id="new-folder-error" class="notice is-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-new-folder" type="button">Cancel</button>
+          <button id="create-folder" class="button-primary" type="submit">Create folder</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="file-context-menu" class="context-menu" role="menu" aria-label="File actions" hidden>
+      <button id="file-details" type="button" role="menuitem">Details</button>
+      <button id="file-rename" type="button" role="menuitem">Rename</button>
+    </div>
+    <dialog id="rename-dialog" aria-labelledby="rename-title">
+      <form id="rename-form">
+        <h2 id="rename-title">Rename</h2>
+        <label for="rename-path">Name</label>
+        <input id="rename-path" name="path" type="text" autocomplete="off" spellcheck="false" required>
+        <p id="rename-error" class="notice is-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-rename" type="button">Cancel</button>
+          <button id="confirm-rename" class="button-primary" type="submit">Rename</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="details-dialog" aria-labelledby="details-title">
+      <h2 id="details-title">File details</h2>
+      <dl class="file-details">
+        <div><dt>Name</dt><dd id="details-name"></dd></div>
+        <div><dt>Title</dt><dd id="details-metadata-title"></dd></div>
+        <div><dt>Path</dt><dd id="details-path"></dd></div>
+        <div><dt>Size</dt><dd id="details-size"></dd></div>
+        <div><dt>Modified</dt><dd id="details-modified"></dd></div>
+      </dl>
+      <div class="dialog-actions"><button id="close-details" type="button">Close</button></div>
+    </dialog>
+    <dialog id="command-dialog" class="command-dialog" aria-labelledby="command-title">
+      <form id="command-form">
+        <div class="command-search">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.2"/><path d="m12.5 12.5 4 4"/></svg>
+          <label id="command-title" class="visually-hidden" for="command-query">Commands</label>
+          <input id="command-query" type="search" placeholder="Search commands" autocomplete="off" spellcheck="false">
+          <button id="command-close" type="button" aria-label="Close command panel">Esc</button>
+        </div>
+        <div id="command-list" class="command-list" role="listbox" aria-label="Commands"></div>
+        <p id="command-empty" class="command-empty" hidden>No matching commands</p>
+      </form>
+    </dialog>
+    <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+      <form id="settings-form">
+        <header class="settings-header">
+          <div>
+            <h2 id="settings-title">Settings</h2>
+            <label class="visually-hidden" for="settings-search">Search settings</label>
+            <input id="settings-search" type="search" placeholder="Search settings" autocomplete="off" spellcheck="false">
+          </div>
+          <button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button>
+        </header>
+        <div class="settings-body">
+          <nav class="settings-tabs" role="tablist" aria-label="Settings">
+            <button type="button" role="tab" data-settings-tab="users" data-admin-only="true" aria-selected="false" hidden>Users</button>
+            <button type="button" role="tab" data-settings-tab="editor" aria-selected="false">Editor</button>
+            <button type="button" role="tab" data-settings-tab="appearance" aria-selected="false">Appearance</button>
+            <button type="button" role="tab" data-settings-tab="layout" aria-selected="false">Layout</button>
+            <button type="button" role="tab" data-settings-tab="library" aria-selected="true">Library</button>
+            <button type="button" role="tab" data-settings-tab="git" aria-selected="false">Git</button>
+            <button type="button" role="tab" data-settings-tab="performance" aria-selected="false">Performance</button>
+            <button type="button" role="tab" data-settings-tab="accessibility" aria-selected="false">Accessibility</button>
+            <button type="button" role="tab" data-settings-tab="shortcuts" aria-selected="false">Shortcuts</button>
+          </nav>
+          <main class="settings-content">
+            <section class="settings-panel" data-settings-panel="users" hidden>
+              <h3>Accounts &amp; invitations</h3>
+              <p id="accounts-error" class="notice is-error" role="alert" hidden></p>
+              <div class="setting-card">
+                <label for="invite-lifetime">Invitation expires in</label>
+                <select id="invite-lifetime"><option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
+              </div>
+              <button id="invite-create" class="button-primary" type="button">Create one-time invitation</button>
+              <div id="invite-created" class="setting-card setting-card-block" hidden>
+                <label for="invite-code">Copy this key now. It is shown only once and creates one regular user.</label>
+                <input id="invite-code" type="text" readonly autocomplete="off">
+                <button id="invite-copy" type="button">Copy invitation</button>
+              </div>
+              <h4>Users</h4><div id="accounts-list" class="accounts-list"></div>
+              <h4>Invitations</h4><div id="invitations-list" class="accounts-list"></div>
+            </section>
+            <section class="settings-panel" data-settings-panel="editor" hidden>
+              <h3>Editor</h3>
+              <div class="setting-card">
+                <label for="settings-auto-save">Auto-save after idle</label>
+                <select id="settings-auto-save">
+                  <option value="500">500 ms</option>
+                  <option value="1000">1 second</option>
+                  <option value="2000">2 seconds</option>
+                  <option value="5000">5 seconds</option>
+                </select>
+              </div>
+              <div class="setting-card">
+                <label for="settings-default-view">Default document view</label>
+                <select id="settings-default-view">
+                  <option value="live">Live</option>
+                  <option value="source">Source</option>
+                  <option value="compare">Compare</option>
+                  <option value="read">Read</option>
+                </select>
+              </div>
+              <label class="setting-card setting-toggle" for="settings-line-wrap">
+                <span>Wrap Source lines</span><input id="settings-line-wrap" type="checkbox">
+              </label>
+              <label class="setting-card setting-toggle" for="settings-spellcheck">
+                <span>Spellcheck in Live mode</span><input id="settings-spellcheck" type="checkbox">
+              </label>
+            </section>
+            <section class="settings-panel" data-settings-panel="appearance" hidden>
+              <h3>Appearance</h3>
+              <div class="setting-card">
+                <label for="settings-theme">Theme</label>
+                <select id="settings-theme">
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+              <div class="setting-card">
+                <label for="settings-latin-font">English font</label>
+                <input id="settings-latin-font" type="text" maxlength="128">
+              </div>
+              <div class="setting-card">
+                <label for="settings-cjk-font">Chinese font</label>
+                <input id="settings-cjk-font" type="text" maxlength="128">
+              </div>
+              <div class="setting-card">
+                <label for="settings-font-size">Document font size</label>
+                <div class="setting-range">
+                  <input id="settings-font-size" type="range" min="12" max="28" step="1">
+                  <output id="settings-font-size-value" for="settings-font-size">17 px</output>
+                </div>
+              </div>
+              <div class="setting-card">
+                <label for="settings-line-height">Document line height</label>
+                <div class="setting-range">
+                  <input id="settings-line-height" type="range" min="120" max="240" step="5">
+                  <output id="settings-line-height-value" for="settings-line-height">175%</output>
+                </div>
+              </div>
+              <div class="setting-card">
+                <label for="settings-density">Interface density</label>
+                <select id="settings-density">
+                  <option value="comfortable">Comfortable</option>
+                  <option value="compact">Compact</option>
+                </select>
+              </div>
+            </section>
+            <section class="settings-panel" data-settings-panel="library">
+              <h3>Library</h3>
+              <div class="setting-card">
+                <span id="settings-library-label">Current folder</span><output id="settings-library-root"></output>
+              </div>
+              <div class="setting-card setting-card-block"><label for="settings-image-directory">Pasted image directory (relative to project)</label><input id="settings-image-directory" maxlength="512" placeholder="assets/images"></div>
+              <div class="setting-card setting-card-block">
+                <label for="hidden-patterns">Hidden paths</label>
+                <textarea id="hidden-patterns" rows="6" placeholder="**/index.md&#10;drafts/**&#10;*.private.md" aria-describedby="hidden-patterns-hint"></textarea>
+                <p id="hidden-patterns-hint" class="form-hint">One rule per line. * matches within one directory; **/ matches zero or more directories. Use **/index.md to hide index.md at every level.</p>
+              </div>
+              <div class="setting-card">
+                <label for="settings-tree-refresh">Automatic file refresh</label>
+                <select id="settings-tree-refresh">
+                  <option value="0">Off</option>
+                  <option value="10">Every 10 seconds</option>
+                  <option value="30">Every 30 seconds</option>
+                  <option value="60">Every minute</option>
+                </select>
+              </div>
+            </section>
+            <section class="settings-panel" data-settings-panel="layout" hidden>
+              <h3>Layout</h3>
+              <div class="setting-card">
+                <label for="settings-page-width">Page width</label>
+                <select id="settings-page-width">
+                  <option value="focused">Focused</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="wide">Wide</option>
+                </select>
+              </div>
+              <div class="setting-card">
+                <label for="settings-sidebar-width">Sidebar width</label>
+                <div class="setting-range">
+                  <input id="settings-sidebar-width" type="range" min="210" max="420" step="10">
+                  <output id="settings-sidebar-value" for="settings-sidebar-width">260 px</output>
+                </div>
+              </div>
+              <div class="setting-card">
+                <label for="settings-default-sidebar">Default sidebar tab</label>
+                <select id="settings-default-sidebar">
+                  <option value="files">Files</option>
+                  <option value="outline">Outline</option>
+                  <option value="git">Git</option>
+                </select>
+              </div>
+              <label class="setting-card setting-toggle" for="settings-sidebar-open">
+                <span>Open sidebar on launch</span><input id="settings-sidebar-open" type="checkbox">
+              </label>
+            </section>
+            <section class="settings-panel" data-settings-panel="git" hidden>
+              <h3>Git</h3>
+              <div class="setting-card">
+                <label for="settings-git-refresh">Status refresh</label>
+                <select id="settings-git-refresh">
+                  <option value="0">Manual</option>
+                  <option value="5">Every 5 seconds</option>
+                  <option value="15">Every 15 seconds</option>
+                  <option value="30">Every 30 seconds</option>
+                </select>
+              </div>
+              <label class="setting-card setting-toggle" for="settings-git-untracked">
+                <span>Show untracked files</span><input id="settings-git-untracked" type="checkbox">
+              </label>
+              <div class="setting-card">
+                <label for="settings-git-diff">Default diff</label>
+                <select id="settings-git-diff">
+                  <option value="working">Working tree</option>
+                  <option value="staged">Staged</option>
+                </select>
+              </div>
+              <label class="setting-card setting-toggle" for="settings-git-sync-enabled"><span>Auto commit and push this project</span><input id="settings-git-sync-enabled" type="checkbox" disabled></label>
+              <div class="setting-card">
+                <label for="settings-git-sync-interval">Sync interval (minutes)</label>
+                <input id="settings-git-sync-interval" type="number" min="1" max="1440" step="1" value="30" disabled>
+              </div>
+              <p id="settings-git-sync-summary" class="settings-note"></p>
+              <p class="settings-note">Owner only. Runs on the server while the browser is closed. Stages and commits all saved project files, including deletions and other users' changes; respects .gitignore, not Notes hidden paths or sharing rules. Unsaved browser drafts are not included. Requires an upstream and Git author identity. No automatic Pull, force push, or merge conflict resolution.</p>
+              <p class="settings-note">Manual Pull and Push still require confirmation. Git hooks and external diff commands are disabled.</p>
+            </section>
+            <section class="settings-panel" data-settings-panel="performance" hidden>
+              <h3>Performance</h3>
+              <div class="setting-card">
+                <label for="settings-large-threshold">Virtual Source threshold</label>
+                <select id="settings-large-threshold">
+                  <option value="512">512 KiB</option>
+                  <option value="768">768 KiB</option>
+                  <option value="1024">1 MiB</option>
+                  <option value="2048">2 MiB</option>
+                </select>
+              </div>
+              <div class="setting-card">
+                <label for="settings-preview-delay">Preview delay</label>
+                <select id="settings-preview-delay">
+                  <option value="100">100 ms</option>
+                  <option value="300">300 ms</option>
+                  <option value="500">500 ms</option>
+                  <option value="1000">1 second</option>
+                </select>
+              </div>
+              <div class="setting-card">
+                <label for="settings-outline-delay">Outline delay</label>
+                <select id="settings-outline-delay">
+                  <option value="25">25 ms</option>
+                  <option value="75">75 ms</option>
+                  <option value="150">150 ms</option>
+                  <option value="300">300 ms</option>
+                </select>
+              </div>
+            </section>
+            <section class="settings-panel" data-settings-panel="accessibility" hidden>
+              <h3>Accessibility</h3>
+              <label class="setting-card setting-toggle" for="settings-reduced-motion">
+                <span>Reduce motion</span><input id="settings-reduced-motion" type="checkbox">
+              </label>
+              <label class="setting-card setting-toggle" for="settings-high-contrast">
+                <span>Increase contrast</span><input id="settings-high-contrast" type="checkbox">
+              </label>
+              <label class="setting-card setting-toggle" for="settings-strong-focus">
+                <span>Strong focus indicators</span><input id="settings-strong-focus" type="checkbox">
+              </label>
+            </section>
+            <section class="settings-panel" data-settings-panel="shortcuts" hidden>
+              <h3>Shortcuts</h3>
+              <div class="setting-card">
+                <label for="settings-command-shortcut">Command panel</label>
+                <select id="settings-command-shortcut">
+                  <option value="primary-k">Ctrl/Cmd+K</option>
+                  <option value="primary-shift-p">Ctrl/Cmd+Shift+P</option>
+                </select>
+              </div>
+            </section>
+          </main>
+        </div>
+        <p id="settings-error" class="notice is-error" role="alert" hidden></p>
+        <footer class="settings-actions">
+          <button id="settings-cancel" type="button">Cancel</button>
+          <button id="settings-save" class="button-primary" type="submit">Save</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="git-diff-dialog" class="git-diff-dialog" aria-labelledby="git-diff-title">
+      <header>
+        <div>
+          <h2 id="git-diff-title">Git diff</h2>
+          <span id="git-diff-path"></span>
+        </div>
+        <button id="git-diff-close" class="icon-button" type="button" aria-label="Close Git diff">×</button>
+      </header>
+      <div class="git-diff-tabs" role="group" aria-label="Diff source">
+        <button id="git-diff-working" type="button" aria-pressed="true">Working tree</button>
+        <button id="git-diff-staged" type="button" aria-pressed="false">Staged</button>
+      </div>
+      <pre id="git-diff-content" class="git-diff-content" tabindex="0"></pre>
+    </dialog>
+    <dialog id="account-password-dialog" aria-labelledby="account-password-title">
+      <form id="account-password-form">
+        <h2 id="account-password-title">Reset password</h2>
+        <label for="account-password">New password (at least 12 UTF-8 bytes)</label>
+        <input id="account-password" type="password" autocomplete="new-password" required maxlength="1024">
+        <p id="account-password-error" class="notice is-error" role="alert" hidden></p>
+        <div class="dialog-actions"><button id="account-password-cancel" type="button">Cancel</button><button class="button-primary" type="submit">Reset password</button></div>
+      </form>
+    </dialog>
     <noscript><p class="notice is-error">Enable JavaScript, then reopen Notes using the desktop app or CLI launch URL.</p></noscript>
+    __WORKSPACE_PANELS__
   </body>
 </html>

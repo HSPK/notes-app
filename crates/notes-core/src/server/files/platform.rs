@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::fs::Metadata;
 use std::io;
 
 use super::super::ApiError;
@@ -14,6 +15,38 @@ mod implementation;
 mod implementation;
 
 pub(super) use implementation::Directory;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct EntryFingerprint(pub(super) [u64; 5]);
+
+pub(super) fn fingerprint(metadata: &Metadata) -> EntryFingerprint {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        EntryFingerprint([
+            metadata.len(),
+            metadata.mtime() as u64,
+            metadata.mtime_nsec() as u64,
+            metadata.ctime() as u64,
+            metadata.ctime_nsec() as u64,
+        ])
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        EntryFingerprint([
+            metadata.file_size(),
+            metadata.last_write_time(),
+            metadata.creation_time(),
+            metadata.file_attributes() as u64,
+            0,
+        ])
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        EntryFingerprint([metadata.len(), 0, 0, 0, 0])
+    }
+}
 
 pub(super) fn ensure_supported() -> Result<(), ApiError> {
     if cfg!(any(windows, target_os = "linux", target_os = "macos")) {

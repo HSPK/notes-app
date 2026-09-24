@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-use super::ApiError;
+use super::{ApiError, EntryFingerprint};
 
 pub(in super::super) struct Directory;
 pub(in super::super) struct EntryMetadata;
@@ -35,6 +35,9 @@ impl EntryMetadata {
     pub(in super::super) fn is_hidden(&self) -> bool {
         false
     }
+    pub(in super::super) fn fingerprint(&self) -> EntryFingerprint {
+        EntryFingerprint([0; 5])
+    }
 }
 
 impl Directory {
@@ -54,6 +57,12 @@ impl Directory {
         Err(api_error())
     }
     pub(in super::super) fn create_new(&self, _: &OsStr) -> io::Result<File> {
+        Err(unsupported())
+    }
+    pub(in super::super) fn create_dir(&self, _: &OsStr) -> io::Result<()> {
+        Err(unsupported())
+    }
+    pub(in super::super) fn move_entry_to(&self, _: &OsStr, _: &Self, _: &OsStr) -> io::Result<()> {
         Err(unsupported())
     }
     pub(in super::super) fn entries(&self) -> io::Result<std::iter::Empty<io::Result<OsString>>> {

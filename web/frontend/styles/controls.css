@@ -1,0 +1,59 @@
+:root {
+  --control-radius: 6px;
+  --control-hover-background: color-mix(in srgb, var(--selection) 72%, transparent);
+  --control-selected-background: var(--selection);
+  --control-focus-background: color-mix(in srgb, var(--focus) 18%, var(--selection));
+  --control-focus-ring: inset 0 0 0 var(--focus-width) var(--focus);
+}
+:root[data-strong-focus="true"] {
+  --control-focus-background: color-mix(in srgb, var(--focus) 30%, var(--selection));
+}
+
+button, summary, a { -webkit-tap-highlight-color: transparent; }
+:is(button, summary, .popup-panel a) {
+  border-radius: var(--control-radius);
+  background: var(--control-background, transparent);
+  color: var(--control-color, inherit);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+button { padding: 6px 10px; border: 0; }
+:is(button, summary, .popup-panel a):hover:not(:disabled) {
+  background: var(--control-hover-background);
+  color: var(--control-color, var(--text));
+}
+:is(button, .popup-panel a):is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"], [aria-current="location"], [aria-current="true"]),
+.popup[open] > summary {
+  background: var(--control-selected-background);
+  color: var(--control-color, var(--text));
+}
+:is(button, .popup-panel a):is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"], [aria-current="location"], [aria-current="true"]):hover:not(:disabled) {
+  background: var(--control-focus-background);
+}
+:focus-visible { outline: none; }
+:is(button, summary, .popup-panel a):focus-visible {
+  background: var(--control-focus-background);
+  color: var(--control-color, var(--text));
+  box-shadow: none;
+}
+:is(input, textarea, select, a):focus-visible { box-shadow: var(--control-focus-ring); }
+.popup-panel a:focus-visible { box-shadow: none; }
+button:disabled { opacity: .4; cursor: default; }
+.button-primary {
+  --control-background: var(--text);
+  --control-color: var(--surface);
+  --control-hover-background: color-mix(in srgb, var(--text) 85%, var(--surface));
+  --control-focus-background: color-mix(in srgb, var(--text) 75%, var(--surface));
+}
+
+@media (forced-colors: active) {
+  :is(button, .popup-panel a):is([aria-pressed="true"], [aria-selected="true"], [aria-current="page"], [aria-current="location"], [aria-current="true"]) {
+    background: Highlight;
+    color: HighlightText;
+  }
+  :root :is(button, summary, input, textarea, select, a, [tabindex]):focus-visible {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}

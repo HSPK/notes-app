@@ -1,0 +1,40 @@
+.virtual-source-editor {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+.virtual-source-editor[hidden] { display: none; }
+.editor-pane.is-virtual-source > textarea.editor,
+.editor-pane.is-virtual-source > .os-scrollbar { display: none; }
+.virtual-source-editor .cm-editor {
+  height: 100%;
+  color: var(--text);
+  background: var(--surface);
+  font-family: var(--code-font);
+  font-size: var(--source-size, 15px);
+}
+.virtual-source-editor .cm-editor.cm-focused,
+.virtual-source-editor .cm-content:focus-visible { outline: none; box-shadow: none; }
+.virtual-source-editor .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  line-height: var(--document-line-height, 1.8);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent;
+}
+.virtual-source-editor .cm-content {
+  min-height: 100%;
+  padding: var(--document-top) max(var(--document-gutter), calc((100% - var(--document-width)) / 2)) 140px;
+  caret-color: var(--text);
+}
+.virtual-source-editor .cm-line { padding: 0; }
+.virtual-source-editor .cm-cursor { border-left-color: var(--text); }
+.virtual-source-editor .cm-selectionBackground,
+.virtual-source-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.document-panes[data-view="split"] .virtual-source-editor .cm-content {
+  padding: 35px 25px 100px;
+}

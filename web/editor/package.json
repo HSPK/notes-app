@@ -1,0 +1,54 @@
+{
+  "name": "@notes-app/editor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./helpers": "./src/editor-helpers.mjs",
+    "./markdown": "./src/markdown.mjs",
+    "./math": "./src/math.mjs",
+    "./roundtrip": "./src/roundtrip.mjs",
+    "./source": "./src/source-editor.mjs"
+  },
+  "scripts": {
+    "benchmark:math-cache": "node benchmarks/cache-math.mjs",
+    "benchmark:math-edit": "npm run build --silent && node benchmarks/edit-math.mjs",
+    "benchmark:math": "npm run build --silent && node benchmarks/live-math.mjs",
+    "benchmark:source-prepare": "npm run build --silent && node benchmarks/source-prepare.mjs",
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/state": "6.7.5",
+    "@codemirror/view": "6.43.12",
+    "@lezer/cpp": "1.1.6",
+    "@lezer/common": "1.5.2",
+    "@lezer/highlight": "1.2.3",
+    "@lezer/javascript": "1.5.4",
+    "@lezer/markdown": "1.7.2",
+    "@lezer/rust": "1.0.2",
+    "@milkdown/core": "7.22.1",
+    "@milkdown/plugin-history": "7.22.1",
+    "@milkdown/preset-commonmark": "7.22.1",
+    "@milkdown/preset-gfm": "7.22.1",
+    "@milkdown/prose": "7.22.1",
+    "@milkdown/utils": "7.22.1",
+    "entities": "8.1.0",
+    "diff": "9.0.0",
+    "katex": "0.18.7",
+    "overlayscrollbars": "2.16.0",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "remark-parse": "11.0.0",
+    "remark-wiki-link": "2.0.1",
+    "unified": "11.0.5",
+    "yaml": "2.9.0",
+    "yjs": "13.6.32"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "esbuild": "0.28.2"
+  }
+}

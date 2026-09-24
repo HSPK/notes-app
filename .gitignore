@@ -1,9 +1,12 @@
 build/
 target/
-Windows/node_modules/
-Windows/test-results/
-Windows/playwright-report/
+/test-results/
+/playwright-report/
+apps/windows/node_modules/
+apps/windows/test-results/
+apps/windows/playwright-report/
 web/node_modules/
+web/editor/dist/
 web/test-results/
 web/playwright-report/
 web/frontend/.browser-test-*/

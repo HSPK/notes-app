@@ -1,80 +1,108 @@
+#[path = "files/assets.rs"]
+mod assets;
+#[path = "files/attachments.rs"]
+mod attachments;
+pub(super) use attachments::{Attachment, media_file};
+#[path = "files/cache.rs"]
+mod cache;
+#[path = "files/documents.rs"]
+mod documents;
+#[path = "files/format.rs"]
+mod format;
+#[path = "files/identities.rs"]
+mod identities;
+#[path = "files/identity_store.rs"]
+mod identity_store;
+#[path = "files/paths.rs"]
+mod paths;
 #[path = "files/platform.rs"]
 mod platform;
+#[path = "files/recycle.rs"]
+mod recycle;
+#[path = "files/tree.rs"]
+mod tree;
 
+pub(super) use documents::document_from_bytes;
+use format::preserve_format;
+pub(super) use identities::Reference;
+use paths::{ignored_directory, validate_directory_path};
+pub(super) use paths::{is_markdown, validate_document_path, validate_relative};
+#[cfg(test)]
+use tree::TreeLimits;
+pub(super) use tree::{Tree, TreeFile};
+
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self, File, Metadata};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, atomic::AtomicU64};
+use std::time::UNIX_EPOCH;
 
 use axum::http::StatusCode;
-use percent_encoding::percent_decode_str;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{ApiError, MAX_DOCUMENT_BYTES, hex, markdown};
+use super::{ApiError, MAX_DOCUMENT_BYTES, frontmatter, hex};
 
-const MAX_ASSET_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PATH_BYTES: usize = 2048;
 const BOM: &[u8] = b"\xef\xbb\xbf";
 
 pub(super) struct Root {
     path: PathBuf,
     directory: platform::Directory,
+    asset_cache: Mutex<assets::AssetCache>,
+    document_cache: Mutex<documents::DocumentCache>,
+    title_cache: RwLock<HashMap<String, tree::CachedTitle>>,
+    resources: OnceLock<super::state_store::ProjectStore>,
+    resource_epoch: AtomicU64,
     // On Windows, denying delete sharing on every ancestor prevents junction swaps.
     _ancestors: Vec<platform::Directory>,
 }
 
-#[derive(Debug, Serialize)]
-pub(super) struct Tree {
-    root: String,
-    files: Vec<TreeFile>,
-    truncated: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct TreeFile {
-    path: String,
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct Document {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) project: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) references: Vec<identities::Reference>,
     pub(super) path: String,
     pub(super) content: String,
     pub(super) html: String,
     pub(super) version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) warning: Option<String>,
+    pub(super) bom: bool,
 }
 
-pub(super) struct Asset {
-    pub(super) bytes: Vec<u8>,
-    pub(super) mime: &'static str,
-    pub(super) download: bool,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EntryDetails {
+    path: String,
+    name: String,
+    title: Option<Arc<str>>,
+    size: u64,
+    modified_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MovedEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    path: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document: Option<Document>,
 }
 
 struct Resolved {
     name: OsString,
     parent: platform::Directory,
     _parents: Vec<platform::Directory>,
-}
-
-#[derive(Clone, Copy)]
-struct TreeLimits {
-    entries: usize,
-    files: usize,
-    depth: usize,
-    duration: Duration,
-}
-
-impl Default for TreeLimits {
-    fn default() -> Self {
-        Self {
-            entries: 20_000,
-            files: 5_000,
-            depth: 32,
-            duration: Duration::from_secs(2),
-        }
-    }
 }
 
 impl Root {
@@ -101,6 +129,11 @@ impl Root {
         Ok(Self {
             path,
             directory,
+            asset_cache: Mutex::new(assets::AssetCache::default()),
+            document_cache: Mutex::new(documents::DocumentCache::default()),
+            title_cache: RwLock::new(HashMap::new()),
+            resources: OnceLock::new(),
+            resource_epoch: AtomicU64::new(u64::MAX),
             _ancestors: ancestors,
         })
     }
@@ -127,42 +160,33 @@ impl Root {
         })
     }
 
-    pub(super) fn tree(&self) -> Result<Tree, ApiError> {
-        self.tree_with_limits(TreeLimits::default())
-    }
-
-    fn tree_with_limits(&self, limits: TreeLimits) -> Result<Tree, ApiError> {
-        let mut walk = TreeWalk {
-            files: Vec::new(),
-            scanned: 0,
-            truncated: false,
-            exhausted: false,
-            started: Instant::now(),
-            limits,
-        };
-        walk.directory(&self.directory, "", 0)?;
-        walk.files.sort_by(|left, right| left.path.cmp(&right.path));
-        Ok(Tree {
-            root: self.path.to_string_lossy().into_owned(),
-            files: walk.files,
-            truncated: walk.truncated,
-        })
-    }
-
-    pub(super) fn document(&self, path: &str) -> Result<Document, ApiError> {
-        validate_document_path(path)?;
-        let resolved = self.resolve(path)?;
-        let mut file = resolved.parent.open_regular(&resolved.name)?;
-        let bytes = read_limited(&mut file, MAX_DOCUMENT_BYTES, "Markdown files")?;
-        document_from_bytes(path, &bytes)
-    }
-
     pub(super) fn save(
         &self,
         path: &str,
         content: &str,
         expected_version: &str,
         check_active: impl Fn() -> Result<(), ApiError>,
+    ) -> Result<Document, ApiError> {
+        self.save_content(path, content, expected_version, check_active, true)
+    }
+
+    pub(super) fn restore(
+        &self,
+        path: &str,
+        content: &str,
+        expected_version: &str,
+        check_active: impl Fn() -> Result<(), ApiError>,
+    ) -> Result<Document, ApiError> {
+        self.save_content(path, content, expected_version, check_active, false)
+    }
+
+    fn save_content(
+        &self,
+        path: &str,
+        content: &str,
+        expected_version: &str,
+        check_active: impl Fn() -> Result<(), ApiError>,
+        preserve: bool,
     ) -> Result<Document, ApiError> {
         check_active()?;
         validate_document_path(path)?;
@@ -191,7 +215,11 @@ impl Root {
             .map_err(deleted_conflict)?;
         check_version(&original_bytes, expected_version)?;
         validate_content(&original_bytes)?;
-        let bytes = preserve_format(&original_bytes, content)?;
+        let bytes = if preserve {
+            preserve_format(&original_bytes, content)?
+        } else {
+            content.as_bytes().to_vec()
+        };
         check_active()?;
         let mut staged = StagedFile::write(&resolved.parent, &bytes, Some(&metadata))?;
 
@@ -211,13 +239,36 @@ impl Root {
         staged.commit(&resolved.name, true)?;
         drop(staged);
         resolved.parent.sync()?;
-        document_from_bytes(path, &bytes)
+        if let Ok(mut cache) = self.document_cache.lock() {
+            cache.remove_tree(path);
+        }
+        self.rendered_document(path, &bytes)
     }
 
     pub(super) fn create(
         &self,
         path: &str,
         content: &str,
+        check_active: impl Fn() -> Result<(), ApiError>,
+    ) -> Result<Document, ApiError> {
+        self.create_content(path, content, None, check_active)
+    }
+
+    pub(super) fn create_restored(
+        &self,
+        path: &str,
+        content: &str,
+        id: &str,
+        check_active: impl Fn() -> Result<(), ApiError>,
+    ) -> Result<Document, ApiError> {
+        self.create_content(path, content, Some(id), check_active)
+    }
+
+    fn create_content(
+        &self,
+        path: &str,
+        content: &str,
+        restored: Option<&str>,
         check_active: impl Fn() -> Result<(), ApiError>,
     ) -> Result<Document, ApiError> {
         check_active()?;
@@ -239,207 +290,164 @@ impl Root {
         staged.commit(&resolved.name, false)?;
         drop(staged);
         resolved.parent.sync()?;
-        document_from_bytes(path, content.as_bytes())
-    }
-
-    pub(super) fn asset(&self, path: &str) -> Result<Asset, ApiError> {
-        validate_relative(path)?;
-        let (mime, download, text) = asset_type(path)
-            .ok_or_else(|| ApiError::forbidden("This attachment type cannot be served."))?;
-        let resolved = self.resolve(path)?;
-        let mut file = resolved.parent.open_regular(&resolved.name)?;
-        let bytes = read_limited(&mut file, MAX_ASSET_BYTES, "Attachments")?;
-        if text && std::str::from_utf8(&bytes).is_err() {
-            return Err(ApiError::bad_request(
-                "This text attachment is not valid UTF-8.",
-            ));
+        if let Ok(mut cache) = self.document_cache.lock() {
+            cache.remove_tree(path);
         }
-        Ok(Asset {
-            bytes,
-            mime,
-            download,
-        })
-    }
-}
-
-struct TreeWalk {
-    files: Vec<TreeFile>,
-    scanned: usize,
-    truncated: bool,
-    exhausted: bool,
-    started: Instant,
-    limits: TreeLimits,
-}
-
-impl TreeWalk {
-    fn directory(
-        &mut self,
-        directory: &platform::Directory,
-        relative: &str,
-        depth: usize,
-    ) -> Result<(), ApiError> {
-        let entries = directory
-            .entries()
-            .map_err(|error| ApiError::io("Could not enumerate a Markdown folder", error))?;
-        for entry in entries {
-            if self.exhausted {
-                break;
-            }
-            if self.scanned >= self.limits.entries || self.started.elapsed() >= self.limits.duration
-            {
-                self.truncated = true;
-                self.exhausted = true;
-                break;
-            }
-            self.scanned += 1;
-            let entry =
-                entry.map_err(|error| ApiError::io("Could not read a folder entry", error))?;
-            let metadata = directory
-                .metadata(&entry)
-                .map_err(|error| ApiError::io("Could not inspect a folder entry", error))?;
-            if metadata.is_link() || metadata.is_hidden() {
-                continue;
-            }
-            let name = entry.into_string().map_err(|_| {
-                ApiError::bad_request("A folder entry has a non-Unicode file name.")
-            })?;
-            let path = if relative.is_empty() {
-                name.clone()
+        if let Some(store) = self.resources.get() {
+            let path = self.canonical_document_path(path)?;
+            if let Some(id) = restored {
+                store.restore_resource(id, &path)?;
             } else {
-                format!("{relative}/{name}")
-            };
-            if metadata.is_dir() {
-                if ignored_directory(&name) {
-                    continue;
-                }
-                if depth >= self.limits.depth {
-                    self.truncated = true;
-                    continue;
-                }
-                validate_relative(&format!("{path}/document.md"))?;
-                let child = directory.open_child(name.as_ref(), true)?;
-                self.directory(&child, &path, depth + 1)?;
-            } else if metadata.is_file() && is_markdown(&name) {
-                validate_document_path(&path)?;
-                if self.files.len() >= self.limits.files {
-                    self.truncated = true;
-                    self.exhausted = true;
-                    break;
-                }
-                self.files.push(TreeFile { path, name });
+                store.retire_resource(&path)?;
             }
         }
-        Ok(())
+        self.rendered_document(path, content.as_bytes())
     }
-}
 
-pub(super) fn is_markdown(path: &str) -> bool {
-    matches!(
-        path.rsplit_once('.')
-            .map(|(_, extension)| extension.to_ascii_lowercase())
-            .as_deref(),
-        Some("md" | "markdown")
-    )
-}
-
-pub(super) fn validate_document_path(path: &str) -> Result<(), ApiError> {
-    validate_relative(path)?;
-    if !is_markdown(path) {
-        return Err(ApiError::bad_request("Choose a .md or .markdown file."));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_relative(path: &str) -> Result<(), ApiError> {
-    validate_path_syntax(path)?;
-    // Query extraction already decodes once. Reject dangerous additional encodings
-    // without changing legitimate file names that contain a literal percent sign.
-    let mut candidate = path.to_owned();
-    for _ in 0..4 {
-        let decoded = percent_decode_str(&candidate)
-            .decode_utf8()
-            .map_err(|_| ApiError::bad_request("The path has an invalid percent encoding."))?;
-        if decoded == candidate {
-            return Ok(());
-        }
-        validate_path_syntax(&decoded)?;
-        candidate = decoded.into_owned();
-    }
-    Err(ApiError::bad_request(
-        "The path has too many layers of percent encoding.",
-    ))
-}
-
-fn validate_path_syntax(path: &str) -> Result<(), ApiError> {
-    if path.is_empty() || path.len() > MAX_PATH_BYTES {
-        return Err(ApiError::bad_request(
-            "The relative path is empty or too long.",
-        ));
-    }
-    if path.chars().any(|character| {
-        character.is_control()
-            || matches!(character, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
-    }) {
-        return Err(ApiError::forbidden(
-            "Absolute, device, stream, and backslash paths are not allowed.",
-        ));
-    }
-    let components = path.split('/').collect::<Vec<_>>();
-    if components.len() > 64 {
-        return Err(ApiError::bad_request(
-            "The relative path has too many folders.",
-        ));
-    }
-    for (index, component) in components.iter().enumerate() {
-        if component.is_empty()
-            || matches!(*component, "." | "..")
-            || component.ends_with(['.', ' '])
-            || reserved_name(component)
-        {
-            return Err(ApiError::forbidden(
-                "Path traversal and reserved file names are not allowed.",
-            ));
-        }
-        if index + 1 < components.len() && ignored_directory(component) {
-            return Err(ApiError::forbidden(
-                "Hidden and dependency folders are not accessible.",
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn ignored_directory(name: &str) -> bool {
-    name.starts_with('.')
-        || matches!(
-            name.to_ascii_lowercase().as_str(),
-            "node_modules"
-                | "target"
-                | "venv"
-                | "__pycache__"
-                | "build"
-                | "dist"
-                | "$recycle.bin"
-                | "system volume information"
-        )
-}
-
-fn reserved_name(name: &str) -> bool {
-    let base = name
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches(' ')
-        .to_ascii_uppercase();
-    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
-        || ["COM", "LPT"].iter().any(|prefix| {
-            base.strip_prefix(prefix).is_some_and(|suffix| {
-                matches!(
-                    suffix,
-                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-                )
-            })
+    pub(super) fn details(&self, path: &str) -> Result<EntryDetails, ApiError> {
+        validate_document_path(path)?;
+        let resolved = self.resolve(path)?;
+        let entry_metadata = resolved
+            .parent
+            .metadata(&resolved.name)
+            .map_err(|error| ApiError::io("Could not inspect the document", error))?;
+        let file = resolved.parent.open_regular(&resolved.name)?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| ApiError::io("Could not inspect the document", error))?;
+        let modified_unix_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+        Ok(EntryDetails {
+            path: path.to_owned(),
+            name: path.rsplit('/').next().unwrap_or(path).to_owned(),
+            title: self.title_for(
+                path,
+                &resolved.parent,
+                &resolved.name,
+                entry_metadata.fingerprint(),
+            ),
+            size: metadata.len(),
+            modified_unix_ms,
         })
+    }
+
+    fn prepare_move(
+        &self,
+        path: &str,
+        destination: &str,
+    ) -> Result<(Resolved, Resolved, &'static str), ApiError> {
+        if path == destination {
+            return Err(ApiError::bad_request(
+                "Choose a different destination path.",
+            ));
+        }
+        validate_relative(path)?;
+        validate_relative(destination)?;
+        let source = self.resolve(path)?;
+        let metadata = source
+            .parent
+            .metadata(&source.name)
+            .map_err(|error| ApiError::io("Could not inspect the source entry", error))?;
+        if metadata.is_link() || metadata.is_hidden() {
+            return Err(ApiError::forbidden(
+                "Hidden files and symbolic links cannot be moved.",
+            ));
+        }
+        let kind = if metadata.is_file() {
+            validate_document_path(path)?;
+            validate_document_path(destination)?;
+            "file"
+        } else if metadata.is_dir() {
+            validate_directory_path(path)?;
+            validate_directory_path(destination)?;
+            if destination.starts_with(&format!("{path}/")) {
+                return Err(ApiError::bad_request(
+                    "A folder cannot be moved inside itself.",
+                ));
+            }
+            "directory"
+        } else {
+            return Err(ApiError::forbidden(
+                "Only Markdown files and real folders can be moved.",
+            ));
+        };
+        let target = self.resolve(destination)?;
+        match target.parent.metadata(&target.name) {
+            Ok(_) => return Err(ApiError::conflict("The destination already exists.")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ApiError::io("Could not inspect the destination", error));
+            }
+        }
+        Ok((source, target, kind))
+    }
+
+    pub(super) fn check_move(
+        &self,
+        path: &str,
+        destination: &str,
+    ) -> Result<&'static str, ApiError> {
+        self.prepare_move(path, destination)
+            .map(|(_, _, kind)| kind)
+    }
+
+    pub(super) fn move_entry(&self, path: &str, destination: &str) -> Result<MovedEntry, ApiError> {
+        let canonical = self.canonical_destination(destination)?;
+        let destination = canonical.as_str();
+        let (source, target, kind) = self.prepare_move(path, destination)?;
+        let move_file = || {
+            source
+                .parent
+                .move_entry_to(&source.name, &target.parent, &target.name)
+                .map_err(|error| ApiError::io("Could not move the entry", error))
+        };
+        if let Some(store) = self.resources.get() {
+            store.move_resources(path, destination, move_file, || {
+                target
+                    .parent
+                    .move_entry_to(&target.name, &source.parent, &source.name)
+                    .map_err(|error| ApiError::io("Could not roll back the entry move", error))
+            })?;
+        } else {
+            move_file()?;
+        }
+        source.parent.sync()?;
+        target.parent.sync()?;
+        if let Ok(mut cache) = self.document_cache.lock() {
+            cache.remove_tree(path);
+            cache.remove_tree(destination);
+        }
+        let document = if kind == "file" {
+            Some(self.document(destination)?)
+        } else {
+            None
+        };
+        let id = if let Some(store) = self.resources.get() {
+            Some(
+                store
+                    .identify(
+                        destination,
+                        if kind == "file" {
+                            super::state_store::resources::ResourceKind::Document
+                        } else {
+                            super::state_store::resources::ResourceKind::Directory
+                        },
+                    )?
+                    .id,
+            )
+        } else {
+            None
+        };
+        Ok(MovedEntry {
+            id,
+            path: destination.to_owned(),
+            kind,
+            document,
+        })
+    }
 }
 
 pub(super) fn validate_content(bytes: &[u8]) -> Result<(), ApiError> {
@@ -508,65 +516,6 @@ fn deleted_conflict(error: ApiError) -> ApiError {
     } else {
         error
     }
-}
-
-fn document_from_bytes(path: &str, bytes: &[u8]) -> Result<Document, ApiError> {
-    validate_content(bytes)?;
-    let content = std::str::from_utf8(bytes.strip_prefix(BOM).unwrap_or(bytes))
-        .map_err(|_| ApiError::bad_request("The Markdown file is not valid UTF-8."))?;
-    Ok(Document {
-        path: path.to_owned(),
-        content: content.to_owned(),
-        html: markdown::render(path, content),
-        version: version(bytes),
-    })
-}
-
-fn preserve_format(original: &[u8], content: &str) -> Result<Vec<u8>, ApiError> {
-    let has_bom = original.starts_with(BOM) || content.starts_with('\u{feff}');
-    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let original = std::str::from_utf8(original)
-        .map_err(|_| ApiError::bad_request("The original document is not valid UTF-8."))?;
-    let bytes = original.as_bytes();
-    let only_crlf = bytes.contains(&b'\n')
-        && bytes.iter().enumerate().all(|(index, byte)| match byte {
-            b'\n' => index > 0 && bytes[index - 1] == b'\r',
-            b'\r' => bytes.get(index + 1) == Some(&b'\n'),
-            _ => true,
-        });
-    let content = if only_crlf && !content.contains('\r') {
-        content.replace('\n', "\r\n")
-    } else if bytes.contains(&b'\r') && !bytes.contains(&b'\n') && !content.contains('\r') {
-        content.replace('\n', "\r")
-    } else {
-        content.to_owned()
-    };
-    let mut result = Vec::with_capacity(content.len() + if has_bom { BOM.len() } else { 0 });
-    if has_bom {
-        result.extend_from_slice(BOM);
-    }
-    result.extend_from_slice(content.as_bytes());
-    validate_content(&result)?;
-    Ok(result)
-}
-
-fn asset_type(path: &str) -> Option<(&'static str, bool, bool)> {
-    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
-    Some(match extension.as_str() {
-        "png" => ("image/png", false, false),
-        "jpg" | "jpeg" => ("image/jpeg", false, false),
-        "gif" => ("image/gif", false, false),
-        "webp" => ("image/webp", false, false),
-        "avif" => ("image/avif", false, false),
-        "bmp" => ("image/bmp", false, false),
-        "ico" => ("image/x-icon", false, false),
-        "svg" => ("image/svg+xml; charset=utf-8", false, true),
-        "pdf" => ("application/pdf", true, false),
-        "txt" | "csv" | "log" | "json" | "yaml" | "yml" | "toml" | "xml" | "md" | "markdown" => {
-            ("text/plain; charset=utf-8", true, true)
-        }
-        _ => return None,
-    })
 }
 
 struct StagedFile {
@@ -647,517 +596,5 @@ impl Drop for StagedFile {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Fixture(PathBuf);
-
-    impl Fixture {
-        fn new() -> Self {
-            let mut random = [0; 8];
-            getrandom::fill(&mut random).unwrap();
-            let path = PathBuf::from("target")
-                .join("server-unit-tests")
-                .join(hex(&random));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            if let Err(error) = fs::remove_dir_all(&self.0) {
-                eprintln!("Could not clean backend unit-test fixture: {error}");
-            }
-        }
-    }
-
-    #[test]
-    fn unsafe_paths_and_encoded_variants_are_rejected() {
-        for path in [
-            "../secret.md",
-            "notes/../../secret.md",
-            "/secret.md",
-            "C:/secret.md",
-            "C:\\secret.md",
-            "\\\\server\\share\\secret.md",
-            "notes.md:secret",
-            "notes\\..\\secret.md",
-            "a//b.md",
-            "a/./b.md",
-            "nul.md",
-            "COM1.md",
-            "a./note.md",
-            "a /note.md",
-            ".git/config.md",
-            "NODE_MODULES/note.md",
-            "%2e%2e/secret.md",
-            "%252e%252e%255csecret.md",
-            "bad\0.md",
-        ] {
-            assert!(validate_relative(path).is_err(), "accepted {path:?}");
-        }
-        for path in ["目录/中文 笔记.md", "notes/100%.md", "notes/a-b_1.MARKDOWN"] {
-            validate_document_path(path).unwrap();
-        }
-    }
-
-    #[test]
-    fn formatting_preserves_bom_and_existing_uniform_newlines() {
-        let original = b"\xef\xbb\xbf# title\r\nold\r\n";
-        assert_eq!(
-            preserve_format(original, "# 标题\nnew\n").unwrap(),
-            "\u{feff}# 标题\r\nnew\r\n".as_bytes()
-        );
-        assert_eq!(preserve_format(b"a\n", "b\r\n").unwrap(), b"b\r\n");
-        assert_eq!(preserve_format(b"a\r\nb\n", "x\ny\n").unwrap(), b"x\ny\n");
-        assert_eq!(preserve_format(b"a\r", "b\n").unwrap(), b"b\r");
-    }
-
-    #[test]
-    fn binary_and_oversized_markdown_are_rejected() {
-        assert!(validate_content(b"\xff").is_err());
-        assert!(validate_content(b"abc\0xyz").is_err());
-        assert!(validate_content(&vec![b'a'; MAX_DOCUMENT_BYTES + 1]).is_err());
-        assert!(validate_content("Unicode 📝\r\n\t".as_bytes()).is_ok());
-    }
-
-    #[test]
-    fn traversal_reference_normalization_is_separate_from_api_paths() {
-        assert!(validate_relative("guides/../readme.md").is_err());
-        assert!(
-            markdown::render("guides/page.md", "[readme](../readme.md)")
-                .contains("/?file=readme.md")
-        );
-    }
-
-    #[test]
-    fn reading_saving_and_creating_preserve_content_and_versions() {
-        let fixture = Fixture::new();
-        fs::create_dir(fixture.0.join("notes")).unwrap();
-        fs::write(
-            fixture.0.join("notes").join("原稿.md"),
-            "\u{feff}# 原稿\r\nbefore\r\n",
-        )
-        .unwrap();
-        let root = Root::open(&fixture.0).unwrap();
-        let original = root.document("notes/原稿.md").unwrap();
-        assert_eq!(original.content, "# 原稿\r\nbefore\r\n");
-        let saved = root
-            .save(
-                "notes/原稿.md",
-                "# Changed\nafter\n",
-                &original.version,
-                || Ok(()),
-            )
-            .unwrap();
-        let expected = "\u{feff}# Changed\r\nafter\r\n".as_bytes();
-        assert_eq!(saved.version, version(expected));
-        assert_eq!(saved.content, "# Changed\r\nafter\r\n");
-        assert_eq!(
-            fs::read(fixture.0.join("notes").join("原稿.md")).unwrap(),
-            expected
-        );
-        let created = root
-            .create("notes/new.markdown", "# New\n📝\n", || Ok(()))
-            .unwrap();
-        assert_eq!(created.content, "# New\n📝\n");
-        assert_eq!(
-            root.document("notes/new.markdown").unwrap().version,
-            created.version
-        );
-        assert_eq!(fs::read_dir(fixture.0.join("notes")).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn tree_limits_report_truncation_and_sort_results() {
-        let fixture = Fixture::new();
-        let path = &fixture.0;
-        fs::create_dir_all(path.join("nested")).unwrap();
-        fs::write(path.join("z.md"), "z").unwrap();
-        fs::write(path.join("a.md"), "a").unwrap();
-        fs::write(path.join("nested").join("b.md"), "b").unwrap();
-        {
-            let root = Root::open(&path).unwrap();
-            let tree = root
-                .tree_with_limits(TreeLimits {
-                    files: 1,
-                    ..TreeLimits::default()
-                })
-                .unwrap();
-            assert_eq!(tree.files.len(), 1);
-            assert!(tree.truncated);
-            let tree = root.tree().unwrap();
-            assert_eq!(
-                tree.files
-                    .iter()
-                    .map(|file| file.path.as_str())
-                    .collect::<Vec<_>>(),
-                ["a.md", "nested/b.md", "z.md"]
-            );
-            assert!(!tree.truncated);
-            let tree = root
-                .tree_with_limits(TreeLimits {
-                    entries: 1,
-                    ..TreeLimits::default()
-                })
-                .unwrap();
-            assert!(tree.truncated);
-            let tree = root
-                .tree_with_limits(TreeLimits {
-                    depth: 0,
-                    ..TreeLimits::default()
-                })
-                .unwrap();
-            assert!(tree.truncated);
-        }
-    }
-
-    #[test]
-    fn tree_entry_and_time_budgets_bound_non_document_scanning() {
-        let fixture = Fixture::new();
-        for index in 0..64 {
-            fs::write(fixture.0.join(format!("{index}.txt")), "not Markdown").unwrap();
-        }
-        for directory in [".private", "node_modules", "target", "build"] {
-            fs::create_dir(fixture.0.join(directory)).unwrap();
-            fs::write(fixture.0.join(directory).join("hidden.md"), "hidden").unwrap();
-        }
-        let root = Root::open(&fixture.0).unwrap();
-        let tree = root
-            .tree_with_limits(TreeLimits {
-                entries: 3,
-                ..TreeLimits::default()
-            })
-            .unwrap();
-        assert!(tree.truncated);
-        assert!(tree.files.is_empty());
-        let tree = root
-            .tree_with_limits(TreeLimits {
-                duration: Duration::ZERO,
-                ..TreeLimits::default()
-            })
-            .unwrap();
-        assert!(tree.truncated);
-        assert!(tree.files.is_empty());
-        let tree = root.tree().unwrap();
-        assert!(!tree.truncated);
-        assert!(tree.files.is_empty());
-    }
-
-    #[test]
-    fn cancelled_saves_and_failed_replacements_clean_staging_files() {
-        use std::cell::Cell;
-
-        let fixture = Fixture::new();
-        fs::write(fixture.0.join("note.md"), "original").unwrap();
-        let root = Root::open(&fixture.0).unwrap();
-        let original = root.document("note.md").unwrap();
-        let checks = Cell::new(0);
-        let result = root.save("note.md", "changed", &original.version, || {
-            checks.set(checks.get() + 1);
-            if checks.get() >= 3 {
-                Err(ApiError::new(StatusCode::REQUEST_TIMEOUT, "cancelled"))
-            } else {
-                Ok(())
-            }
-        });
-        assert_eq!(result.unwrap_err().status, StatusCode::REQUEST_TIMEOUT);
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("note.md")).unwrap(),
-            "original"
-        );
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
-
-        let checks = Cell::new(0);
-        let result = root.create("new.md", "new", || {
-            checks.set(checks.get() + 1);
-            if checks.get() >= 2 {
-                Err(ApiError::new(StatusCode::REQUEST_TIMEOUT, "cancelled"))
-            } else {
-                Ok(())
-            }
-        });
-        assert!(result.is_err());
-        assert!(!fixture.0.join("new.md").exists());
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
-
-        fs::create_dir(fixture.0.join("directory.md")).unwrap();
-        let resolved = root.resolve("directory.md").unwrap();
-        {
-            let mut staged = StagedFile::write(&resolved.parent, b"never published", None).unwrap();
-            assert!(staged.commit(&resolved.name, true).is_err());
-        }
-        assert!(fixture.0.join("directory.md").is_dir());
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn creation_does_not_clobber_a_file_created_during_staging() {
-        use std::cell::Cell;
-
-        let fixture = Fixture::new();
-        let root = Root::open(&fixture.0).unwrap();
-        let checks = Cell::new(0);
-        let result = root.create("new.md", "app content", || {
-            checks.set(checks.get() + 1);
-            if checks.get() == 2 {
-                fs::write(fixture.0.join("new.md"), "external content").unwrap();
-            }
-            Ok(())
-        });
-        assert_eq!(result.unwrap_err().status, StatusCode::CONFLICT);
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("new.md")).unwrap(),
-            "external content"
-        );
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn a_changed_version_after_staging_keeps_external_content_and_cleans_up() {
-        use std::cell::Cell;
-
-        let fixture = Fixture::new();
-        fs::write(fixture.0.join("note.md"), "original").unwrap();
-        let root = Root::open(&fixture.0).unwrap();
-        let original = root.document("note.md").unwrap();
-        let checks = Cell::new(0);
-        let result = root.save("note.md", "app content", &original.version, || {
-            checks.set(checks.get() + 1);
-            if checks.get() == 2 {
-                fs::write(fixture.0.join("replacement.md"), "external content").unwrap();
-                fs::rename(fixture.0.join("replacement.md"), fixture.0.join("note.md")).unwrap();
-            }
-            Ok(())
-        });
-        assert_eq!(result.unwrap_err().status, StatusCode::CONFLICT);
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("note.md")).unwrap(),
-            "external content"
-        );
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symbolic_link_parents_and_final_entries_are_never_followed() {
-        use std::os::unix::fs::symlink;
-
-        let fixture = Fixture::new();
-        fs::create_dir(fixture.0.join("notes")).unwrap();
-        fs::create_dir(fixture.0.join("outside")).unwrap();
-        fs::write(fixture.0.join("outside").join("note.md"), "outside").unwrap();
-        let outside = fs::canonicalize(fixture.0.join("outside")).unwrap();
-        symlink(&outside, fixture.0.join("notes").join("linked")).unwrap();
-        symlink(
-            outside.join("note.md"),
-            fixture.0.join("notes").join("linked.md"),
-        )
-        .unwrap();
-        symlink(
-            outside.join("missing.md"),
-            fixture.0.join("notes").join("dangling.md"),
-        )
-        .unwrap();
-        let root = Root::open(&fixture.0.join("notes")).unwrap();
-        for path in ["linked/note.md", "linked.md", "dangling.md"] {
-            assert_eq!(
-                root.document(path).unwrap_err().status,
-                StatusCode::FORBIDDEN
-            );
-            assert!(
-                root.save(path, "changed", &version(b"outside"), || Ok(()))
-                    .is_err()
-            );
-            assert!(root.create(path, "new", || Ok(())).is_err());
-        }
-        assert!(root.tree().unwrap().files.is_empty());
-        assert_eq!(
-            fs::read_to_string(outside.join("note.md")).unwrap(),
-            "outside"
-        );
-        assert!(!outside.join("missing.md").exists());
-        assert_eq!(fs::read_dir(fixture.0.join("notes")).unwrap().count(), 3);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn later_requests_keep_the_selected_root_when_its_ancestor_is_swapped() {
-        use std::os::unix::fs::symlink;
-
-        let fixture = Fixture::new();
-        fs::create_dir_all(fixture.0.join("container").join("notes")).unwrap();
-        fs::create_dir_all(fixture.0.join("outside").join("notes")).unwrap();
-        fs::write(
-            fixture.0.join("container").join("notes").join("note.md"),
-            "inside",
-        )
-        .unwrap();
-        fs::write(
-            fixture.0.join("outside").join("notes").join("note.md"),
-            "outside",
-        )
-        .unwrap();
-        let root = Root::open(&fixture.0.join("container").join("notes")).unwrap();
-        fs::rename(fixture.0.join("container"), fixture.0.join("held")).unwrap();
-        symlink(
-            fs::canonicalize(fixture.0.join("outside")).unwrap(),
-            fixture.0.join("container"),
-        )
-        .unwrap();
-        let original = root.document("note.md").unwrap();
-        assert_eq!(original.content, "inside");
-        root.save("note.md", "updated", &original.version, || Ok(()))
-            .unwrap();
-        root.create("new.md", "new inside", || Ok(())).unwrap();
-        let tree = root.tree().unwrap();
-        assert_eq!(
-            tree.files
-                .iter()
-                .map(|file| file.path.as_str())
-                .collect::<Vec<_>>(),
-            ["new.md", "note.md"]
-        );
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("held").join("notes").join("note.md")).unwrap(),
-            "updated"
-        );
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("outside").join("notes").join("note.md")).unwrap(),
-            "outside"
-        );
-        assert!(
-            !fixture
-                .0
-                .join("outside")
-                .join("notes")
-                .join("new.md")
-                .exists()
-        );
-        assert_eq!(
-            fs::read_dir(fixture.0.join("held").join("notes"))
-                .unwrap()
-                .count(),
-            2
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn concurrent_directory_iterators_have_independent_cursors() {
-        let fixture = Fixture::new();
-        for index in 0..5 {
-            fs::write(fixture.0.join(format!("{index}.md")), "note").unwrap();
-        }
-        let root = Root::open(&fixture.0).unwrap();
-        let mut first = root.directory.entries().unwrap();
-        let mut first_names = vec![first.next().unwrap().unwrap()];
-        let mut second_names = root
-            .directory
-            .entries()
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        first_names.extend(first.collect::<Result<Vec<_>, _>>().unwrap());
-        first_names.sort();
-        second_names.sort();
-        assert_eq!(first_names.len(), 5);
-        assert_eq!(first_names, second_names);
-        assert_eq!(root.tree().unwrap().files.len(), 5);
-        assert_eq!(root.tree().unwrap().files.len(), 5);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn abandoned_staging_is_removed_from_the_pinned_parent_after_a_swap() {
-        use std::os::unix::fs::symlink;
-
-        let fixture = Fixture::new();
-        fs::create_dir_all(fixture.0.join("notes").join("child")).unwrap();
-        fs::create_dir(fixture.0.join("outside")).unwrap();
-        fs::write(
-            fixture.0.join("notes").join("child").join("note.md"),
-            "original",
-        )
-        .unwrap();
-        let root = Root::open(&fixture.0.join("notes")).unwrap();
-        let resolved = root.resolve("child/note.md").unwrap();
-        let staged = StagedFile::write(&resolved.parent, b"unpublished", None).unwrap();
-        let staging_name = staged.name.clone();
-        fs::write(fixture.0.join("outside").join(&staging_name), "outside").unwrap();
-        fs::rename(
-            fixture.0.join("notes").join("child"),
-            fixture.0.join("notes").join("held"),
-        )
-        .unwrap();
-        symlink(
-            fs::canonicalize(fixture.0.join("outside")).unwrap(),
-            fixture.0.join("notes").join("child"),
-        )
-        .unwrap();
-        drop(staged);
-        assert!(
-            !fixture
-                .0
-                .join("notes")
-                .join("held")
-                .join(&staging_name)
-                .exists()
-        );
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("outside").join(&staging_name)).unwrap(),
-            "outside"
-        );
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("notes").join("held").join("note.md")).unwrap(),
-            "original"
-        );
-        assert_eq!(fs::read_dir(fixture.0.join("outside")).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn a_held_parent_cannot_be_replaced_with_an_escaping_directory() {
-        let fixture = Fixture::new();
-        fs::create_dir(fixture.0.join("notes")).unwrap();
-        fs::create_dir(fixture.0.join("outside")).unwrap();
-        fs::write(fixture.0.join("outside").join("note.md"), "outside").unwrap();
-        fs::create_dir(fixture.0.join("notes").join("child")).unwrap();
-        let root = Root::open(&fixture.0.join("notes")).unwrap();
-        let resolved = root.resolve("child/note.md").unwrap();
-        let moved = fs::rename(
-            fixture.0.join("notes").join("child"),
-            fixture.0.join("notes").join("held"),
-        );
-        #[cfg(windows)]
-        assert!(
-            moved.is_err(),
-            "Windows allowed a held ancestor to be substituted"
-        );
-        #[cfg(unix)]
-        {
-            moved.unwrap();
-            std::os::unix::fs::symlink(
-                fs::canonicalize(fixture.0.join("outside")).unwrap(),
-                fixture.0.join("notes").join("child"),
-            )
-            .unwrap();
-        }
-        let mut staged = StagedFile::write(&resolved.parent, b"inside", None).unwrap();
-        staged.commit(&resolved.name, false).unwrap();
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("outside").join("note.md")).unwrap(),
-            "outside"
-        );
-        #[cfg(windows)]
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("notes").join("child").join("note.md")).unwrap(),
-            "inside"
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            fs::read_to_string(fixture.0.join("notes").join("held").join("note.md")).unwrap(),
-            "inside"
-        );
-    }
-}
+#[path = "files/tests.rs"]
+mod tests;

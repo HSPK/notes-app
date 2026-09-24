@@ -1,8 +1,10 @@
+#[path = "settings/store.rs"]
+mod store;
+
+pub use store::SettingsStore;
+
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,6 +19,8 @@ pub struct Settings {
     pub auto_open_browser: bool,
     #[serde(rename = "EditorAppearance", alias = "editorAppearance")]
     pub appearance: crate::appearance::Appearance,
+    #[serde(rename = "WebPreferences", alias = "webPreferences")]
+    pub web: WebPreferences,
 }
 
 impl Default for Settings {
@@ -27,141 +31,192 @@ impl Default for Settings {
             auto_start: true,
             auto_open_browser: true,
             appearance: crate::appearance::Appearance::default(),
+            web: WebPreferences::default(),
         }
     }
 }
 
 impl Settings {
-    pub fn path() -> Result<PathBuf, String> {
-        #[cfg(windows)]
-        {
-            std::env::var_os("LOCALAPPDATA")
-                .map(|p| PathBuf::from(p).join("NotesApp").join("settings.json"))
-                .ok_or_else(|| "LOCALAPPDATA is not set.".into())
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::env::var_os("HOME")
-                .map(|p| {
-                    PathBuf::from(p)
-                        .join("Library")
-                        .join("Application Support")
-                        .join("NotesApp")
-                        .join("settings.json")
-                })
-                .ok_or_else(|| "HOME is not set.".into())
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let directory =
-                match std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-                    Some(value) => {
-                        let path = PathBuf::from(value);
-                        if !path.is_absolute() {
-                            return Err("XDG_CONFIG_HOME must be absolute.".into());
-                        }
-                        path
-                    }
-                    None => PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set.")?)
-                        .join(".config"),
-                };
-            Ok(directory.join("notes-app").join("settings.json"))
-        }
-        #[cfg(not(any(windows, unix)))]
-        {
-            Err("This platform has no supported settings directory.".into())
-        }
-    }
-
-    pub fn load(path: &Path) -> Result<Option<Self>, String> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
-        };
-        let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
-        let result: Self = serde_json::from_slice(bytes).map_err(|e| {
-            format!(
-                "Invalid settings in {} (file was not changed): {e}",
-                path.display()
-            )
-        })?;
-        result.validate()?;
-        Ok(Some(result))
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         if self.port == 0 {
             return Err("Settings port must be between 1 and 65535.".into());
         }
-        self.appearance.validate()
+        self.appearance.validate()?;
+        self.web.validate()
     }
+}
 
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        self.validate()?;
-        // Refuse to replace a corrupt previous configuration.
-        Self::load(path)?;
-        let parent = path.parent().ok_or("Settings path has no parent.")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let mut random = [0_u8; 16];
-        getrandom::fill(&mut random)
-            .map_err(|error| format!("Could not name the settings staging file: {error}"))?;
-        let name = random
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let temporary = parent.join(format!(".settings-{name}.new"));
-        let mut created = false;
-        let result = (|| {
-            use std::io::Write;
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
-            created = true;
-            file.write_all(&serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?)
-                .and_then(|_| file.sync_all())
-                .map_err(|e| e.to_string())?;
-            drop(file);
-            #[cfg(windows)]
-            {
-                use std::os::windows::ffi::OsStrExt;
-                use windows_sys::Win32::Storage::FileSystem::{
-                    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-                };
-                let src: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-                let dst: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-                if unsafe {
-                    MoveFileExW(
-                        src.as_ptr(),
-                        dst.as_ptr(),
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                    )
-                } == 0
-                {
-                    return Err(std::io::Error::last_os_error().to_string());
-                }
-            }
-            #[cfg(not(windows))]
-            fs::rename(&temporary, path).map_err(|e| e.to_string())?;
-            Ok(())
-        })();
-        if result.is_err() && created {
-            if let Err(error) = fs::remove_file(temporary) {
-                eprintln!("Could not remove the settings staging file: {error}");
-            }
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultView {
+    Live,
+    Source,
+    Compare,
+    Read,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarTab {
+    Files,
+    Outline,
+    Git,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InterfaceDensity {
+    Compact,
+    Comfortable,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GitDiffMode {
+    Working,
+    Staged,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageCompression {
+    Original,
+    Webp,
+    Jpeg,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WebPreferences {
+    pub image_directory: String,
+    pub image_compression: ImageCompression,
+    pub image_max_edge: u32,
+    pub image_quality: u8,
+    pub auto_save_delay_ms: u64,
+    pub default_view: DefaultView,
+    pub source_line_wrap: bool,
+    pub spellcheck: bool,
+    pub font_size_px: u8,
+    pub line_height_percent: u16,
+    pub density: InterfaceDensity,
+    pub default_sidebar: SidebarTab,
+    pub sidebar_open: bool,
+    pub hidden_patterns: Vec<String>,
+    pub tree_refresh_seconds: u64,
+    pub git_refresh_seconds: u64,
+    pub git_show_untracked: bool,
+    pub git_default_diff: GitDiffMode,
+    pub large_document_threshold_kib: u32,
+    pub preview_delay_ms: u64,
+    pub outline_delay_ms: u64,
+    pub reduced_motion: bool,
+    pub high_contrast: bool,
+    pub strong_focus: bool,
+}
+
+impl Default for WebPreferences {
+    fn default() -> Self {
+        Self {
+            image_directory: "assets/images".into(),
+            image_compression: ImageCompression::Original,
+            image_max_edge: 0,
+            image_quality: 85,
+            auto_save_delay_ms: 1000,
+            default_view: DefaultView::Live,
+            source_line_wrap: true,
+            spellcheck: true,
+            font_size_px: 17,
+            line_height_percent: 175,
+            density: InterfaceDensity::Comfortable,
+            default_sidebar: SidebarTab::Files,
+            sidebar_open: true,
+            hidden_patterns: Vec::new(),
+            tree_refresh_seconds: 0,
+            git_refresh_seconds: 15,
+            git_show_untracked: true,
+            git_default_diff: GitDiffMode::Working,
+            large_document_threshold_kib: 768,
+            preview_delay_ms: 300,
+            outline_delay_ms: 75,
+            reduced_motion: false,
+            high_contrast: false,
+            strong_focus: true,
         }
-        result
+    }
+}
+
+impl WebPreferences {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.image_max_edge != 0 && !(256..=8192).contains(&self.image_max_edge) {
+            return Err("Image maximum edge must be zero or between 256 and 8192 pixels.".into());
+        }
+        if !(50..=100).contains(&self.image_quality) {
+            return Err("Image quality must be between 50 and 100.".into());
+        }
+        if self.image_directory.len() > 512
+            || self.image_directory.split('/').any(|part| {
+                part.is_empty()
+                    || part.starts_with('.')
+                    || part.chars().any(|c| {
+                        c.is_control()
+                            || matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                    })
+            })
+        {
+            return Err("Image directory must be a safe project-relative path.".into());
+        }
+
+        let ranged = |value, minimum, maximum, name| {
+            if value < minimum || value > maximum {
+                Err(format!("{name} must be between {minimum} and {maximum}."))
+            } else {
+                Ok(())
+            }
+        };
+        ranged(self.auto_save_delay_ms, 250, 10_000, "Auto-save delay")?;
+        ranged(self.font_size_px as u64, 12, 28, "Editor font size")?;
+        ranged(
+            self.line_height_percent as u64,
+            120,
+            240,
+            "Editor line height",
+        )?;
+        if self.tree_refresh_seconds != 0 {
+            ranged(
+                self.tree_refresh_seconds,
+                5,
+                3600,
+                "Library refresh interval",
+            )?;
+        }
+        if self.git_refresh_seconds != 0 {
+            ranged(self.git_refresh_seconds, 3, 3600, "Git refresh interval")?;
+        }
+        ranged(
+            self.large_document_threshold_kib as u64,
+            256,
+            4096,
+            "Large document threshold",
+        )?;
+        ranged(self.preview_delay_ms, 0, 5000, "Preview delay")?;
+        ranged(self.outline_delay_ms, 0, 2000, "Outline delay")?;
+        if self.hidden_patterns.len() > 100
+            || self.hidden_patterns.iter().any(|pattern| {
+                pattern.is_empty() || pattern.len() > 256 || pattern.chars().any(char::is_control)
+            })
+            || self.hidden_patterns.iter().map(String::len).sum::<usize>() > 16 * 1024
+        {
+            return Err("Hidden paths contain too many or invalid patterns.".into());
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
     #[test]
     fn editor_appearance_migration_and_validation() {
         let legacy: Settings =
@@ -194,6 +249,7 @@ mod tests {
         assert!(!settings.auto_open_browser);
         assert!(Settings::default().auto_start);
         assert!(Settings::default().auto_open_browser);
+        assert_eq!(Settings::default().web.auto_save_delay_ms, 1000);
         assert!(
             Settings {
                 port: 0,
@@ -210,20 +266,21 @@ mod tests {
             .join(format!("settings-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
         let mut settings = Settings::default();
-        settings.save(&path).unwrap();
+        store.save(&settings).unwrap();
         settings.port = 9001;
         settings.appearance.theme = crate::appearance::Theme::Light;
         settings.appearance.latin_font = "Consolas".into();
         settings.appearance.cjk_font = "宋体".into();
-        settings.save(&path).unwrap();
-        assert_eq!(Settings::load(&path).unwrap().unwrap().port, 9001);
+        store.save(&settings).unwrap();
+        assert_eq!(store.load().unwrap().unwrap().port, 9001);
         assert_eq!(
-            Settings::load(&path).unwrap().unwrap().appearance,
+            store.load().unwrap().unwrap().appearance,
             settings.appearance
         );
         fs::write(&path, b"broken").unwrap();
-        assert!(settings.save(&path).is_err());
+        assert!(store.save(&settings).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"broken");
         fs::remove_dir_all(dir).unwrap();
     }

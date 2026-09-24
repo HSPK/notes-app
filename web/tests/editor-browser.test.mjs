@@ -18,13 +18,34 @@ test("formatted editing preserves YAML independently of body editing, selection,
   const profile = path.join(webRoot, "frontend", `.browser-test-${process.pid}`);
   await mkdir(profile, { recursive: true });
   const harness = `
-    import {createInlineEditor, extractOutline, applyAppearance} from "/editor.bundle.mjs";
+    import {createInlineEditor, createSourceEditor, extractOutline, applyAppearance} from "/editor.bundle.mjs";
     window.extractOutline = extractOutline;
     window.applyAppearance = applyAppearance;
+    window.verifySourceSizing = () => {
+      const frame = document.createElement("div");
+      const textarea = document.createElement("textarea");
+      frame.append(textarea);
+      document.body.append(frame);
+      const source = createSourceEditor({
+        textarea,
+        nonce: document.querySelector('meta[name="notes-style-nonce"]').content,
+      });
+      textarea.value = "a".repeat(700 * 1024);
+      textarea.dispatchEvent(new Event("input"));
+      source.prepare();
+      const belowThreshold = !source.isVirtual();
+      textarea.value = "中".repeat(300 * 1024);
+      textarea.dispatchEvent(new Event("input"));
+      source.prepare();
+      const aboveThreshold = source.isVirtual() && source.value.length === 300 * 1024;
+      source.destroy();
+      frame.remove();
+      return {belowThreshold, aboveThreshold};
+    };
     window.changes = []; window.fallbacks = []; window.links = []; window.outlines = []; window.selections = []; window.cspViolations = [];
     document.addEventListener("securitypolicyviolation", event => cspViolations.push(event.violatedDirective));
     window.editor = createInlineEditor({
-      root: document.querySelector("#root"), toolbar: document.querySelector("#toolbar"),
+      root: document.querySelector("#root"),
       onChange: text => changes.push(text), onFallback: text => fallbacks.push(text),
       onLink: href => links.push(href), onOutline: items => outlines.push(items),
       onSelection: value => selections.push(value),
@@ -37,7 +58,7 @@ test("formatted editing preserves YAML independently of body editing, selection,
     try {
       if (request.url === "/") {
         response.setHeader("Content-Type", "text/html");
-        response.end('<!doctype html><meta name="notes-style-nonce" content="notes-editor-test"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/editor.bundle.css"><link rel="stylesheet" href="/test.css"><div class="test-sidebar"><div class="search-field"><input id="file-filter" aria-label="Search files"></div><button class="file-button">A note</button></div><button id="outside">Outside editor</button><div id="toolbar"></div><section id="test-layout" class="rich-pane"><div id="root" class="rich-editor"></div></section><script type="module" src="/test.mjs"></script>');
+        response.end('<!doctype html><meta name="notes-style-nonce" content="notes-editor-test"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/editor.bundle.css"><link rel="stylesheet" href="/test.css"><div class="test-sidebar"><div class="search-field"><input id="file-filter" aria-label="Search files"></div><button class="file-button">A note</button></div><button id="outside">Outside editor</button><section id="test-layout" class="rich-pane"><div id="root" class="rich-editor"></div></section><script type="module" src="/test.mjs"></script>');
       } else if (request.url === "/test.css") {
         response.setHeader("Content-Type", "text/css");
         response.end("#test-layout { height: calc(100vh - 80px); } .test-sidebar { position: absolute; top: 0; left: 0; width: 180px; }");
@@ -59,15 +80,21 @@ test("formatted editing preserves YAML independently of body editing, selection,
   let socket;
   try {
     const debugPort = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Browser startup timed out")), 15000);
+      const timer = setTimeout(() => reject(new Error("Browser startup timed out")), 30000);
       processHandle.once("error", reject);
       processHandle.stderr.on("data", (data) => {
         const match = data.toString().match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)/);
         if (match) { clearTimeout(timer); resolve(Number(match[1])); }
       });
     });
-    const targets = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
-    socket = new WebSocket(targets.find((target) => target.type === "page").webSocketDebuggerUrl);
+    let pageTarget;
+    for (let attempt = 0; attempt < 100 && !pageTarget; attempt += 1) {
+      const targets = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
+      pageTarget = targets.find((target) => target.type === "page");
+      if (!pageTarget) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(pageTarget, "Browser page target did not become available.");
+    socket = new WebSocket(pageTarget.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
     let sequence = 0;
     const pending = new Map();
@@ -92,10 +119,19 @@ test("formatted editing preserves YAML independently of body editing, selection,
       return result.result.value;
     };
     const type = (text) => command("Input.insertText", { text });
-    const undo = () => evaluate("document.querySelector('button[aria-label=Undo]').click()");
+    const undo = async () => {
+      await command("Input.dispatchKeyEvent", {
+        type: "keyDown", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90, modifiers: 2,
+      });
+      await command("Input.dispatchKeyEvent", {
+        type: "keyUp", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90, modifiers: 2,
+      });
+    };
     await command("Runtime.enable");
-    for (let count = 0; count < 100 && !await evaluate("Boolean(window.loaded)"); count++) await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(await evaluate("Boolean(window.loaded)"), true);
+    for (let count = 0; count < 600 && !errors.length && !await evaluate("Boolean(window.loaded)"); count++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(await evaluate("Boolean(window.loaded)"), true, JSON.stringify(errors));
 
     const prefix = '\uFEFF---\r\n# keep comment and order\r\ntitle: "Guide: examples"\r\ndescription: >-\r\n  Folded description\r\n  across lines\r\ntags:\r\n  - alpha\r\n  - "beta tag"\r\nunknown:\r\n  nested: [one, "two"]\r\n---\r\n\r\n';
     const body = '# Heading **world**\r\n\r\nA **bold** paragraph.\r\n\r\n- [ ] A task\r\n- Other\r\n\r\n| A | B |\r\n| - | - |\r\n| x | y |\r\n\r\n```cpp\r\nint main() {\r\n  return 0;\r\n}\r\n```\r\n\r\n[Next](../next.md#hello)\r\n\r\n![Local](../images/a.png)\r\n';
@@ -109,17 +145,15 @@ test("formatted editing preserves YAML independently of body editing, selection,
     assert.equal(await evaluate("document.querySelectorAll('.ProseMirror h2,.ProseMirror hr').length"), 0);
     assert.doesNotMatch(await evaluate("document.querySelector('.ProseMirror').textContent"), /title:|Folded description|unknown:/);
     assert.equal(await evaluate("document.querySelector('.notes-metadata details').open"), false);
-    const summary = await evaluate("document.querySelector('.notes-metadata-summary').textContent");
-    assert.match(summary, /Guide: examples/);
-    assert.match(await evaluate("document.querySelector('.notes-metadata-description').textContent"), /Folded description across lines/);
-    assert.deepEqual(await evaluate("[...document.querySelectorAll('.notes-metadata-tag')].map(tag => tag.textContent)"), ["alpha", "beta tag"]);
+    assert.equal(await evaluate("document.querySelector('.notes-metadata summary').textContent.trim()"), "Metadata");
+    assert.equal(await evaluate("document.querySelectorAll('.notes-metadata-summary,.notes-metadata-description,.notes-metadata-tag,.notes-metadata-hint,.notes-metadata-editor-heading').length"), 0);
     assert.equal(await evaluate("document.querySelector('.notes-metadata-warning').hidden"), true);
     assert.equal(await evaluate("editor.getSource()"), source);
     assert.deepEqual(await evaluate("changes"), []);
     assert.deepEqual(await evaluate("outlines.at(-1)"), [{ text: "Heading world", level: 1, from: prefix.length, id: "heading-world" }]);
     assert.deepEqual(await evaluate(`extractOutline(${JSON.stringify(source)})`), await evaluate("outlines.at(-1)"));
-    assert.equal(await evaluate("document.querySelector('.ProseMirror a').getAttribute('href')"), "/?file=next.md#hello");
-    assert.equal(await evaluate("document.querySelector('.ProseMirror img[src]').getAttribute('src')"), "/assets?path=images%2Fa.png");
+    assert.equal(await evaluate("document.querySelector('.ProseMirror a').getAttribute('href')"), "/next.md#hello");
+    assert.equal(await evaluate("document.querySelector('.ProseMirror img[src]').getAttribute('src')"), "/images/a.png");
     assert.equal(await evaluate("document.querySelectorAll('.notes-code-gutter span').length"), 3);
     assert.ok(await evaluate("document.querySelectorAll('.notes-code-keyword').length") > 0);
     const layout = await evaluate(`(() => {
@@ -147,14 +181,17 @@ test("formatted editing preserves YAML independently of body editing, selection,
     await evaluate("document.querySelector('#file-filter').focus()");
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#file-filter')).outlineStyle"), "none");
     assert.equal(await evaluate("getComputedStyle(document.querySelector('#file-filter')).borderTopWidth"), "0px");
-    assert.equal(await evaluate("getComputedStyle(document.querySelector('.search-field'),'::before').height"), "2px");
-    assert.equal(await evaluate("getComputedStyle(document.querySelector('.search-field'),'::before').width"), "28px");
-    assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.search-field'),'::before').backgroundColor"), "rgba(0, 0, 0, 0)");
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.search-field'),'::before').content"), "none");
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.search-field')).borderRadius"), "6px");
+    assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.search-field')).backgroundColor"), "rgba(0, 0, 0, 0)");
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.file-button'),'::before').content"), "none");
     await evaluate("document.querySelector('#outside').focus()");
     await command("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
     await command("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
-    assert.equal(await evaluate("getComputedStyle(document.activeElement).outlineStyle"), "solid");
+    assert.equal(await evaluate("getComputedStyle(document.activeElement).outlineStyle"), "none");
+    assert.equal(await evaluate("getComputedStyle(document.activeElement).boxShadow"), "none");
+    assert.equal(await evaluate("getComputedStyle(document.activeElement).borderRadius"), "6px");
+    assert.notEqual(await evaluate("getComputedStyle(document.activeElement).backgroundColor"), "rgba(0, 0, 0, 0)");
 
     await evaluate(`editor.select(${source.indexOf("Heading") + 3})`);
     assert.equal(await evaluate("document.querySelector('.ProseMirror h1').textContent"), "Heading world");
@@ -244,7 +281,7 @@ test("formatted editing preserves YAML independently of body editing, selection,
     assert.ok((await evaluate("changes.at(-1)")).startsWith(changedPrefix));
     assert.match(await evaluate("changes.at(-1)"), /!\[Local\]\(\.\.\/images\/a\.png\)/);
     await evaluate("document.querySelector('.ProseMirror a').dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}))");
-    assert.deepEqual(await evaluate("links"), ["/?file=next.md#hello"]);
+    assert.deepEqual(await evaluate("links"), ["/next.md#hello"]);
     const tableText = await evaluate("editor.getSource()");
     await evaluate(`editor.select(${tableText.indexOf("| x |") + 2})`);
     await type("new");
@@ -302,17 +339,23 @@ test("formatted editing preserves YAML independently of body editing, selection,
     assert.equal(await evaluate("editor.jumpTo('missing')"), false);
     await evaluate("editor.load('[Reference][id]\\n\\n[id]: ../next.md\\n', 'Folder/reference.md')");
     assert.deepEqual(await evaluate("fallbacks"), []);
-    assert.equal(await evaluate("document.querySelector('.ProseMirror a').getAttribute('href')"), "/?file=next.md");
+    assert.equal(await evaluate("document.querySelector('.ProseMirror a').getAttribute('href')"), "/next.md");
     const html = "---\ntitle: safe\n---\n\n<div id=\"executed\">HTML</div><script>window.executed=true</script>";
+    const fallbackCount = await evaluate("fallbacks.length");
     await evaluate(`editor.load(${JSON.stringify(html)}, 'html.md')`);
     assert.equal(await evaluate("editor.getSource()"), html);
-    assert.match(await evaluate("fallbacks.at(-1)"), /raw HTML/);
+    assert.equal(await evaluate("fallbacks.length"), fallbackCount);
+    assert.ok(await evaluate("document.querySelectorAll('.ProseMirror [data-type=html]').length") >= 1);
     assert.equal(await evaluate("Boolean(window.executed || document.querySelector('#executed'))"), false);
     await evaluate("editor.load('[Unsafe](javascript:alert(1))\\n\\n![Remote](https://example.com/tracker.png)', 'unsafe.md')");
     assert.equal(await evaluate("document.querySelector('.ProseMirror a').hasAttribute('href')"), false);
     assert.equal(await evaluate("document.querySelectorAll('.ProseMirror img[src]').length"), 0);
     await evaluate("(async () => {const pending = editor.load('# Canceled', 'canceled.md'); editor.clear(); await pending;})()");
     assert.equal(await evaluate("document.querySelectorAll('.ProseMirror').length"), 0);
+    assert.deepEqual(await evaluate("verifySourceSizing()"), {
+      belowThreshold: true,
+      aboveThreshold: true,
+    });
     assert.deepEqual(await evaluate("cspViolations"), []);
     assert.deepEqual(errors, []);
     await command("Browser.close").catch(() => {});

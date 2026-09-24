@@ -2,12 +2,18 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::{RunningServer, server, settings::Settings};
+use crate::{
+    RunningServer,
+    auth::UserStore,
+    server,
+    settings::{Settings, SettingsStore},
+};
 
 /// A desktop-neutral controller. Wrappers own windows, menus and browser launch.
 pub struct NotesCore {
     settings: Settings,
-    settings_path: PathBuf,
+    settings_store: SettingsStore,
+    user_store: UserStore,
     first_run: bool,
     service: Option<RunningServer>,
 }
@@ -22,12 +28,16 @@ pub struct Status {
 
 impl NotesCore {
     pub fn new(settings_path: Option<PathBuf>) -> Result<Self, String> {
-        let settings_path = settings_path.map_or_else(Settings::path, Ok)?;
-        let loaded = Settings::load(&settings_path)?;
+        let settings_store = settings_path
+            .map(SettingsStore::new)
+            .map_or_else(SettingsStore::platform_default, Ok)?;
+        let user_store = UserStore::alongside_settings(settings_store.path());
+        let loaded = settings_store.load()?;
         Ok(Self {
             first_run: loaded.is_none(),
             settings: loaded.unwrap_or_default(),
-            settings_path,
+            settings_store,
+            user_store,
             service: None,
         })
     }
@@ -36,7 +46,7 @@ impl NotesCore {
         &self.settings
     }
     pub fn settings_path(&self) -> &Path {
-        &self.settings_path
+        self.settings_store.path()
     }
     pub fn is_first_run(&self) -> bool {
         self.first_run
@@ -50,6 +60,9 @@ impl NotesCore {
     }
 
     pub fn save_settings(&mut self, mut settings: Settings) -> Result<(), String> {
+        if let Some(persisted) = self.settings_store.load()? {
+            settings.web = persisted.web;
+        }
         settings.validate()?;
         if !settings.directory.as_os_str().is_empty() {
             settings.directory = settings
@@ -71,7 +84,11 @@ impl NotesCore {
             return Err("Stop the notes service before changing its folder or port.".into());
         }
         let mut prepared = if location_changed && !settings.directory.as_os_str().is_empty() {
-            let service = server::start(&settings.directory, settings.port)?;
+            let service = server::start_with_users(
+                &settings.directory,
+                settings.port,
+                self.user_store.clone(),
+            )?;
             service.set_appearance(settings.appearance.clone())?;
             Some(service)
         } else {
@@ -82,7 +99,7 @@ impl NotesCore {
                 service.stop()?;
             }
         }
-        settings.save(&self.settings_path)?;
+        self.settings_store.save(&settings)?;
         self.settings = settings;
         self.first_run = false;
         if let Some(service) = prepared {
@@ -102,7 +119,11 @@ impl NotesCore {
         if self.settings.directory.as_os_str().is_empty() {
             return Err("Choose a notes folder in Settings first.".into());
         }
-        let service = server::start(&self.settings.directory, self.settings.port)?;
+        let service = server::start_with_users(
+            &self.settings.directory,
+            self.settings.port,
+            self.user_store.clone(),
+        )?;
         service.set_appearance(self.settings.appearance.clone())?;
         self.service = Some(service);
         Ok(())
@@ -149,12 +170,21 @@ mod tests {
         let url = core.open_url().unwrap();
         settings.directory = settings.directory.canonicalize().unwrap();
         settings.appearance.theme = Theme::Dark;
+        let mut persisted = SettingsStore::new(path.clone()).load().unwrap().unwrap();
+        persisted.web.auto_save_delay_ms = 2000;
+        SettingsStore::new(path.clone()).save(&persisted).unwrap();
         core.save_settings(settings.clone()).unwrap();
         assert_eq!(core.open_url().unwrap(), url);
         assert_eq!(
-            Settings::load(&path).unwrap().unwrap().appearance.theme,
+            SettingsStore::new(path)
+                .load()
+                .unwrap()
+                .unwrap()
+                .appearance
+                .theme,
             Theme::Dark
         );
+        assert_eq!(core.settings().web.auto_save_delay_ms, 2000);
         settings.port = if port == 65535 { 8123 } else { port + 1 };
         assert!(core.save_settings(settings).is_err());
         assert_eq!(core.status().port, port);
